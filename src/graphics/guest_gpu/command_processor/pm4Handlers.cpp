@@ -333,8 +333,7 @@ static void HwCtxIgnoreCbDccControl([[maybe_unused]] uint32_t value) {}
 static void HwCtxIgnorePointState([[maybe_unused]] uint32_t cmd_offset,
                                   [[maybe_unused]] uint32_t value) {}
 
-static void HwCtxIgnoreBorderColorTableAddr([[maybe_unused]] uint32_t cmd_offset,
-                                            [[maybe_unused]] uint32_t value) {}
+static std::atomic<uint64_t> g_border_color_table_base {0};
 
 static void HwCtxIgnoreSpiTmpringSize(uint32_t value) {
 	static std::atomic<uint32_t> log_count {0};
@@ -399,7 +398,7 @@ KYTY_HW_CTX_PARSER(HwCtxSetBorderColorTableAddr) {
 	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
 
 	for (uint32_t i = 0; i < num_values; i++) {
-		HwCtxIgnoreBorderColorTableAddr(cmd_offset + i, buffer[i]);
+		SetBorderColorTableAddress(cmd_offset + i, buffer[i]);
 	}
 
 	return num_values;
@@ -1237,8 +1236,6 @@ KYTY_HW_UC_PARSER(HwUcSetMultiPrimIbReset) {
 	return 1;
 }
 
-static void HwUcIgnoreBorderColorTableAddr([[maybe_unused]] uint32_t cmd_offset,
-                                           [[maybe_unused]] uint32_t value) {}
 
 KYTY_HW_UC_PARSER(HwUcSetBorderColorTableAddr) {
 	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
@@ -1246,7 +1243,7 @@ KYTY_HW_UC_PARSER(HwUcSetBorderColorTableAddr) {
 	                     cmd_offset + num_values - 1u > Pm4::TA_CS_BC_BASE_ADDR_HI);
 
 	for (uint32_t i = 0; i < num_values; i++) {
-		HwUcIgnoreBorderColorTableAddr(cmd_offset + i, buffer[i]);
+		SetBorderColorTableAddress(cmd_offset + i, buffer[i]);
 	}
 
 	return num_values;
@@ -3027,10 +3024,10 @@ void GraphicsInitJmpTablesCxIndirect() {
 		HwCtxIgnoreDepthMetadataRegister(cmd_offset, value);
 	};
 	g_hw_ctx_indirect_func[Pm4::TA_BC_BASE_ADDR] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxIgnoreBorderColorTableAddr(cmd_offset, value);
+		SetBorderColorTableAddress(cmd_offset, value);
 	};
 	g_hw_ctx_indirect_func[Pm4::TA_BC_BASE_ADDR_HI] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxIgnoreBorderColorTableAddr(cmd_offset, value);
+		SetBorderColorTableAddress(cmd_offset, value);
 	};
 	g_hw_ctx_indirect_func[Pm4::PA_SU_POINT_SIZE] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
 		HwCtxIgnorePointState(cmd_offset, value);
@@ -3858,10 +3855,10 @@ void GraphicsInitJmpTablesUcIndirect() {
 		cp.GetUcfg().SetPrimitiveResetControl(value);
 	};
 	g_hw_uc_indirect_func[Pm4::TA_CS_BC_BASE_ADDR] = [](KYTY_HW_UC_INDIRECT_ARGS) {
-		HwUcIgnoreBorderColorTableAddr(cmd_offset, value);
+		SetBorderColorTableAddress(cmd_offset, value);
 	};
 	g_hw_uc_indirect_func[Pm4::TA_CS_BC_BASE_ADDR_HI] = [](KYTY_HW_UC_INDIRECT_ARGS) {
-		HwUcIgnoreBorderColorTableAddr(cmd_offset, value);
+		SetBorderColorTableAddress(cmd_offset, value);
 	};
 
 	g_hw_uc_indirect_func[Pm4::GE_INDX_OFFSET] = [](KYTY_HW_UC_INDIRECT_ARGS) {
@@ -3885,6 +3882,23 @@ void GraphicsInitJmpTablesUcIndirect() {
 			     cmd_offset, value);
 		}
 	};
+}
+
+void SetBorderColorTableAddress(uint32_t reg_offset, uint32_t value) {
+	const bool high =
+	    (reg_offset == Pm4::TA_BC_BASE_ADDR_HI || reg_offset == Pm4::TA_CS_BC_BASE_ADDR_HI);
+	const uint64_t mask = (high ? 0xffffffff00000000ull : 0x00000000ffffffffull);
+	const uint64_t bits =
+	    (high ? (static_cast<uint64_t>(value) << 32u) : static_cast<uint64_t>(value));
+	auto base = g_border_color_table_base.load(std::memory_order_relaxed);
+	while (!g_border_color_table_base.compare_exchange_weak(
+	    base, (base & ~mask) | bits, std::memory_order_relaxed, std::memory_order_relaxed)) {
+	}
+}
+
+uint64_t GetBorderColorTableAddress() {
+	// The register pair holds ADDRESS[39:8] of the border color table.
+	return (g_border_color_table_base.load(std::memory_order_relaxed) & 0xffffffffffull) << 8u;
 }
 
 } // namespace Libs::Graphics

@@ -27,7 +27,9 @@ public:
 	vk::Sampler GetSampler(const ShaderSamplerResource& r);
 
 private:
-	using SamplerKey = std::array<uint32_t, 4>;
+	// Descriptor words plus the resolved custom border color, which comes from the
+	// guest border color table rather than the descriptor itself.
+	using SamplerKey = std::array<uint32_t, 8>;
 
 	struct SamplerKeyHash {
 		std::size_t operator()(const SamplerKey& key) const {

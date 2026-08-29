@@ -519,4 +519,13 @@ enum class VertexAttribFormat : uint32_t {
 
 } // namespace Libs::Graphics::Prospero
 
+namespace Libs::Graphics {
+
+// TA_BC_BASE_ADDR / TA_CS_BC_BASE_ADDR: base of the guest border color table sampled by
+// descriptors whose border color type is kFromTable.
+void     SetBorderColorTableAddress(uint32_t reg_offset, uint32_t value);
+uint64_t GetBorderColorTableAddress();
+
+} // namespace Libs::Graphics
+
 #endif /* EMULATOR_INCLUDE_EMULATOR_GRAPHICS_GUEST_GPU_GPU_DEFS_H_ */
