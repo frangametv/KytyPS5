@@ -544,8 +544,9 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		    !cache.ClearMeta(metadata.range.address)) {
 			EXIT("failed to acquire HTile metadata for a depth clear\n");
 		}
+		// A depth-read-only pass would discard the depth earlier passes wrote, so leave the clear armed.
 		const bool meta_clear =
-		    metadata.kind == ImageMetadataKind::Htile &&
+		    metadata.kind == ImageMetadataKind::Htile && depth.depth_write_enable &&
 		    cache.IsMetaCleared(metadata.range.address, depth.desc.view_info.base_layer);
 		depth.depth_load_clear_enable = depth.depth_clear_enable || meta_clear;
 		if (meta_clear &&
