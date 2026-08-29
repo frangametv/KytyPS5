@@ -16643,6 +16643,33 @@ TestCase CvtPkrtzF16F32SdwaAndOutputModifiers() {
            O::S_ENDPGM}};
 }
 
+TestCase PackedFmacF16AccumulatesEachHalfIndependently() {
+  using O = ShaderOpcode;
+
+  // V_PK_FMAC_F16 is VOP2, so it carries no OP_SEL field and each lane must take its own half:
+  //   vdst.lo = src0.lo * src1.lo + vdst.lo
+  //   vdst.hi = src0.hi * src1.hi + vdst.hi
+  // Reading the low half for both lanes gives the same result twice, which is what an
+  // unset OP_SEL_HI produces.
+  std::vector<u32> code;
+  AppendVMovLiteral(&code, 0, 0x42004000u);  // hi=3.0h  lo=2.0h
+  AppendVMovLiteral(&code, 1, 0x47004500u);  // hi=7.0h  lo=5.0h
+  AppendVMovLiteral(&code, 10, 0x49003c00u); // hi=10.0h lo=1.0h
+
+  code.push_back(EncodeVop2(0x3c, 10, Vgpr(0), 1));
+
+  AppendStoreVgpr(&code, 10, 0);
+  AppendEnd(&code);
+
+  // lo = 2*5 + 1  = 11.0h = 0x4980
+  // hi = 3*7 + 10 = 31.0h = 0x4fc0
+  return {"PackedFmacF16AccumulatesEachHalfIndependently",
+          code,
+          {},
+          {0x4fc04980u},
+          {O::V_MOV_B32, O::V_PK_FMAC_F16, O::BUFFER_STORE_DWORD, O::S_ENDPGM}};
+}
+
 TestCase PackedMinMaxF16NanAndSignedZeroEdges() {
   using O = ShaderOpcode;
 
@@ -24418,6 +24445,7 @@ std::vector<TestCase> MakeCases() {
   AddCase(CvtPkU8F32PacksSelectedByte);
   AddCase(CvtPkrtzF16F32SubnormalRoundsTowardZero);
   AddCase(CvtPkrtzF16F32SdwaAndOutputModifiers);
+  AddCase(PackedFmacF16AccumulatesEachHalfIndependently);
   AddCase(PackedMinMaxF16NanAndSignedZeroEdges);
   AddCase(VectorMinMaxF16Ops);
   AddCase(VectorCvtU16F16Sdwa);
