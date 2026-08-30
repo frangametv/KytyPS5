@@ -197,6 +197,9 @@ IR::Value Translator::ReadOperand(const Decoder::Operand& operand, IR::Type type
 		               {ApplyBitSourceModifiers(operand, ReadRawU32(operand))});
 	}
 	if (type == IR::Type::F16) {
+		// Half operands reach the ALU through ReadF16LaneAsF32, which applies abs/neg itself; this
+		// path is only safe while no opcode declares an F16 argument type.
+		EXIT_IF(operand.absolute || operand.negate);
 		const auto bits = IR::U16(ir.Emit(IR::ValueOpcode::ConvertU16U32,
 		                                  {ApplyBitSourceModifiers(operand, ReadRawU32(operand))}));
 		return ir.Emit(IR::ValueOpcode::BitCastF16U16, {bits});
