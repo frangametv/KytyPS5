@@ -24074,6 +24074,62 @@ TestCase BvhIntersectRayBoxNodeUnsorted() {
 }
 // raytracing: end
 
+// raytracing: begin - a zero-thickness box at the ray's own y with an infinite inverse
+// direction on that axis, so the y slab evaluates to 0 * inf = NaN. IEEE minNum/maxNum ignore
+// the NaN, leaving the x and z slabs to decide: child 0 lies at x in [2, 4] and is missed,
+// child 1 straddles the origin and is hit. Order-dependent NaN propagation would drop the x
+// constraint and report child 0 as a hit at t = 0 as well.
+TestCase BvhIntersectRayBoxNodeNanAxis() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  static constexpr u32 kNode[32] = {
+      0x00000055u, 0x0000005du, 0xffffffffu, 0xffffffffu, 0x40000000u, 0x00000000u,
+      0xbf800000u, 0x40800000u, 0x00000000u, 0x3f800000u, 0xbf800000u, 0x00000000u,
+      0xbf800000u, 0x3f800000u, 0x00000000u, 0x3f800000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u};
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 5u);
+  AppendVMovLiteral(&code, 1, 0x41200000u);
+  AppendVMovU32(&code, 2, 0);
+  AppendVMovU32(&code, 3, 0);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovLiteral(&code, 5, 0x3f800000u);
+  AppendVMovU32(&code, 6, 0);
+  AppendVMovLiteral(&code, 7, 0x3f800000u);
+  AppendVMovLiteral(&code, 8, 0x3f800000u);
+  AppendVMovLiteral(&code, 9, 0x7f800000u);
+  AppendVMovLiteral(&code, 10, 0x3f800000u);
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  for (u32 dword = 0; dword < 4u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 32u, 0u);
+  std::copy(std::begin(kNode), std::end(kNode),
+            memory.begin() + kNodeByteOffset / sizeof(u32));
+
+  TestCase test;
+  test.name = "BvhIntersectRayBoxNodeNanAxis";
+  test.code = code;
+  test.initial = std::move(memory);
+  test.expected = {0x0000005du, 0xffffffffu, 0xffffffffu, 0xffffffffu};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0x80000000u;
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
 // raytracing: begin - the same triangle hit, in triangle-ID return mode rather than
 // barycentric. The distance is still reported as a numerator over a denominator, but the last
 // two dwords become the node's stored id plus the index of the triangle within the fan, and an
@@ -24400,6 +24456,7 @@ std::vector<TestCase> MakeCases() {
   AddCase(BvhIntersectRayTriangleA16);
   AddCase(BvhIntersectRayBvh64BoxNode);
   AddCase(BvhIntersectRayBoxNodeUnsorted);
+  AddCase(BvhIntersectRayBoxNodeNanAxis);
   AddCase(BvhIntersectRayTriangleIdMode);
   AddCase(BvhIntersectRayUserNodeMisses);
   // raytracing: end
@@ -28758,6 +28815,8 @@ int main(int argc, char **argv) {
     std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayBvh64BoxNode");
     RunCase(&vulkan, BvhIntersectRayBoxNodeUnsorted());
     std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayBoxNodeUnsorted");
+    RunCase(&vulkan, BvhIntersectRayBoxNodeNanAxis());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayBoxNodeNanAxis");
     RunCase(&vulkan, BvhIntersectRayTriangleIdMode());
     std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayTriangleIdMode");
     RunCase(&vulkan, BvhIntersectRayUserNodeMisses());
