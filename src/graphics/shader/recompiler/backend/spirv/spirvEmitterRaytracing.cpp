@@ -68,6 +68,38 @@ uint32_t LoadDword(EmitterState& state, uint32_t device_base, uint32_t byte_offs
 	return value;
 }
 
+// A page that failed to resolve is device address 0. Loads are skipped for it, as the DMA path
+// does, since the node data is discarded anyway once the result is marked unmapped.
+std::vector<uint32_t> LoadDwords(EmitterState& state, uint32_t mapped,
+                                 const std::vector<std::pair<uint32_t, uint32_t>>& sources) {
+	const auto u32         = TypeU32(state);
+	const auto load_label  = state.builder.AllocateId();
+	const auto load_exit   = state.builder.AllocateId();
+	const auto skip_label  = state.builder.AllocateId();
+	const auto merge_label = state.builder.AllocateId();
+	state.builder.AddFunction({OpSelectionMerge, merge_label, SelectionControlNone});
+	state.builder.AddFunction({OpBranchConditional, mapped, load_label, skip_label});
+	EmitLabel(state, load_label);
+	std::vector<uint32_t> loaded;
+	loaded.reserve(sources.size());
+	for (const auto& [page, offset]: sources) {
+		loaded.push_back(LoadDword(state, page, offset));
+	}
+	state.builder.AddFunction({OpBranch, load_exit});
+	EmitLabel(state, load_exit);
+	state.builder.AddFunction({OpBranch, merge_label});
+	EmitLabel(state, skip_label);
+	state.builder.AddFunction({OpBranch, merge_label});
+	EmitLabel(state, merge_label);
+	const auto zero = ConstantU32(state, 0);
+	for (auto& value: loaded) {
+		const auto result = state.builder.AllocateId();
+		state.builder.AddFunction({OpPhi, u32, result, value, load_exit, zero, skip_label});
+		value = result;
+	}
+	return loaded;
+}
+
 uint32_t ResolvePage(EmitterState& state, uint32_t address) {
 	const auto result = state.builder.AllocateId();
 	state.builder.AddFunction(
@@ -318,10 +350,12 @@ void DefineBvhIntersect(EmitterState& state) {
 	const auto mapped32 =
 	    Op2(state, OpLogicalAnd, bool_type, Op2(state, OpINotEqual, bool_type, page0, zero_address),
 	        Op2(state, OpINotEqual, bool_type, page1, zero_address));
-	const auto dword32 = [&](uint32_t index) {
-		return index < 16u ? LoadDword(state, page0, index * 4u)
-		                   : LoadDword(state, page1, (index - 16u) * 4u);
-	};
+	std::vector<std::pair<uint32_t, uint32_t>> sources32;
+	for (uint32_t index = 0; index < 28u; index++) {
+		sources32.emplace_back(index < 16u ? page0 : page1, (index & 15u) * 4u);
+	}
+	const auto              loaded32 = LoadDwords(state, mapped32, sources32);
+	const auto              dword32  = [&](uint32_t index) { return loaded32[index]; };
 	std::array<uint32_t, 4> child32 {};
 	std::array<Vec3, 4>     min32 {};
 	std::array<Vec3, 4>     max32 {};
@@ -351,7 +385,12 @@ void DefineBvhIntersect(EmitterState& state) {
 	EmitLabel(state, box16_label);
 	const auto page16   = ResolvePage(state, node_address);
 	const auto mapped16 = Op2(state, OpINotEqual, bool_type, page16, zero_address);
-	const auto dword16  = [&](uint32_t index) { return LoadDword(state, page16, index * 4u); };
+	std::vector<std::pair<uint32_t, uint32_t>> sources16;
+	for (uint32_t index = 0; index < 16u; index++) {
+		sources16.emplace_back(page16, index * 4u);
+	}
+	const auto loaded16 = LoadDwords(state, mapped16, sources16);
+	const auto dword16  = [&](uint32_t index) { return loaded16[index]; };
 	// Each child packs six halves into three dwords: min = (lo0, hi0, lo1),
 	// max = (hi1, lo2, hi2).
 	const auto low_half  = [&](uint32_t word) { return EmitF16BitsToF32(state, word); };
@@ -391,7 +430,12 @@ void DefineBvhIntersect(EmitterState& state) {
 	EmitLabel(state, tri_label);
 	const auto tri_page   = ResolvePage(state, node_address);
 	const auto tri_mapped = Op2(state, OpINotEqual, bool_type, tri_page, zero_address);
-	const auto tri_dword  = [&](uint32_t index) { return LoadDword(state, tri_page, index * 4u); };
+	std::vector<std::pair<uint32_t, uint32_t>> tri_sources;
+	for (uint32_t index = 0; index < 16u; index++) {
+		tri_sources.emplace_back(tri_page, index * 4u);
+	}
+	const auto          tri_loaded = LoadDwords(state, tri_mapped, tri_sources);
+	const auto          tri_dword  = [&](uint32_t index) { return tri_loaded[index]; };
 	std::array<Vec3, 5> vertex {};
 	for (uint32_t index = 0; index < 5u; index++) {
 		for (uint32_t axis = 0; axis < 3u; axis++) {

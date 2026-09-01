@@ -24191,6 +24191,48 @@ TestCase BvhIntersectRayBoxNodeGrown() {
 }
 // raytracing: end
 
+// raytracing: begin - a node pointer into a page the BVH mapping does not cover. The page
+// lookup yields device address 0; the helper must neither load through it (a GPU fault, seen
+// as a device loss) nor report children, so all four slots come back invalid.
+TestCase BvhIntersectRayUnmappedNodeMisses() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, (0x400u << 3u) | 5u);  // fp32 box node 0x10000 bytes past the base
+  AppendVMovLiteral(&code, 1, 0x41200000u);
+  AppendVMovU32(&code, 2, 0);
+  AppendVMovU32(&code, 3, 0);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovU32(&code, 5, 0);
+  AppendVMovU32(&code, 6, 0);
+  AppendVMovLiteral(&code, 7, 0x3f800000u);
+  AppendVMovLiteral(&code, 8, 0x7f800000u);
+  AppendVMovLiteral(&code, 9, 0x7f800000u);
+  AppendVMovLiteral(&code, 10, 0x3f800000u);
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  for (u32 dword = 0; dword < 4u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  TestCase test;
+  test.name = "BvhIntersectRayUnmappedNodeMisses";
+  test.code = code;
+  test.initial = std::vector<u32>(kNodeByteOffset / sizeof(u32) + 32u, 0u);
+  test.expected = {0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0x80000000u;
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
 // raytracing: begin - the same triangle hit, in triangle-ID return mode rather than
 // barycentric. The distance is still reported as a numerator over a denominator, but the last
 // two dwords become the node's stored id plus the index of the triangle within the fan, and an
@@ -24519,6 +24561,7 @@ std::vector<TestCase> MakeCases() {
   AddCase(BvhIntersectRayBoxNodeUnsorted);
   AddCase(BvhIntersectRayBoxNodeNanAxis);
   AddCase(BvhIntersectRayBoxNodeGrown);
+  AddCase(BvhIntersectRayUnmappedNodeMisses);
   AddCase(BvhIntersectRayTriangleIdMode);
   AddCase(BvhIntersectRayUserNodeMisses);
   // raytracing: end
@@ -28881,6 +28924,8 @@ int main(int argc, char **argv) {
     std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayBoxNodeNanAxis");
     RunCase(&vulkan, BvhIntersectRayBoxNodeGrown());
     std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayBoxNodeGrown");
+    RunCase(&vulkan, BvhIntersectRayUnmappedNodeMisses());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayUnmappedNodeMisses");
     RunCase(&vulkan, BvhIntersectRayTriangleIdMode());
     std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayTriangleIdMode");
     RunCase(&vulkan, BvhIntersectRayUserNodeMisses());
