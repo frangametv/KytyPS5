@@ -368,6 +368,7 @@ struct EmitterState {
 	uint32_t                                         bda_pagetable_variable  = 0;
 	uint32_t                                         fault_buffer_variable   = 0;
 	uint32_t                                         bda_pointer_function    = 0;
+	uint32_t                                         bvh_intersect_function  = 0; // raytracing:
 	uint32_t                                         gds_variable            = 0;
 	uint32_t                                         gds_length              = 0;
 	uint32_t                                         push_constant_variable  = 0;
@@ -774,6 +775,13 @@ bool EmitValueImage(ValueEmitContext& ctx, const IR::Inst& inst);
 void EmitProgram(EmitterState& state);
 
 void DefineGetBdaPointer(EmitterState& state);
+
+// raytracing: four descriptor dwords plus the node pointer as two dwords; then ray extent,
+// origin, direction and inverse direction.
+constexpr uint32_t BvhIntersectScalarArgs = 6;
+constexpr uint32_t BvhIntersectFloatArgs  = 10;
+void DefineBvhIntersect(EmitterState& state);
+bool EmitValueRaytracing(ValueEmitContext& ctx, const IR::Inst& inst);
 
 // These templates accept local lambdas from several emitter translation units.
 template <typename Fn>

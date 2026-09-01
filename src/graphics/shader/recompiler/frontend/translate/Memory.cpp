@@ -633,11 +633,51 @@ bool Translator::IMAGE_GET_RESINFO(const Decoder::Instruction& inst) {
 	return true;
 }
 
-// raytracing: traversal is not implemented; return the invalid-node sentinel so a box node
-// reports no hit children and the guest traversal unwinds instead of re-entering the tree
+// raytracing: one address component, from the NSA payload when present and from the
+// sequential run after vaddr otherwise.
+IR::U32 Translator::BvhAddressComponent(const Decoder::Instruction& inst, uint32_t index) {
+	const auto base = PlainOperand(inst.src0);
+	if (index == 0) {
+		return ReadRawU32(base);
+	}
+	const auto nsa = std::min(inst.image_nsa_dwords * 4u, Decoder::MaxImageNsaAddressComponents);
+	if (index - 1u < nsa) {
+		return ir.GetVectorReg(static_cast<IR::VectorReg>(inst.image_nsa_addr[index - 1u]));
+	}
+	return ReadRawU32(OffsetOperand(base, index));
+}
+
+// raytracing: emit one BVH node intersection. A16 packs the direction vectors as half pairs;
+// that form is unobserved so far, so it keeps the fail-safe path rather than untested unpacking.
 bool Translator::IMAGE_BVH_INTERSECT_RAY(const Decoder::Instruction& inst) {
+	const bool a16   = (inst.image_sample_flags & Decoder::ImageSampleFlagA16) != 0;
+	const bool bvh64 = inst.opcode == Decoder::Opcode::IMAGE_BVH64_INTERSECT_RAY;
+	if (a16) {
+		for (uint32_t component = 0; component < 4u; component++) {
+			WriteOperand(OffsetOperand(inst.dst, component), IR::Value(0xffffffffu));
+		}
+		return true;
+	}
+
+	const auto memory = MemoryInfoFromDecoded(inst);
+	const auto pointer_low  = BvhAddressComponent(inst, 0);
+	const auto pointer_high = bvh64 ? BvhAddressComponent(inst, 1) : IR::U32(IR::Value(0u));
+	const auto first        = bvh64 ? 2u : 1u;
+	const auto ray          = [&](uint32_t index) {
+		return IR::F32(ir.Emit(IR::ValueOpcode::BitCastF32U32,
+		                                {BvhAddressComponent(inst, first + index)}));
+	};
+
+	const auto result = ir.Emit(
+	    IR::ValueOpcode::BvhIntersectRay,
+	    {GetResourceDword(memory.resource, 0), GetResourceDword(memory.resource, 1),
+	     GetResourceDword(memory.resource, 2), GetResourceDword(memory.resource, 3), pointer_low,
+	     pointer_high, ray(0), ray(1), ray(2), ray(3), ray(4), ray(5), ray(6), ray(7), ray(8),
+	     ray(9)});
 	for (uint32_t component = 0; component < 4u; component++) {
-		WriteOperand(OffsetOperand(inst.dst, component), IR::Value(0xffffffffu));
+		WriteOperand(OffsetOperand(inst.dst, component),
+		             ir.Emit(IR::ValueOpcode::CompositeExtractU32x4,
+		                     {result, IR::Value(component)}));
 	}
 	return true;
 }

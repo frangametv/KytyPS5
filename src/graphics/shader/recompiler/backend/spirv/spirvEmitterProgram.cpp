@@ -225,7 +225,7 @@ uint32_t EmitDispatcherNextPc(ValueEmitContext& ctx, const DispatcherFunctionSta
 
 void EmitDirectInstruction(ValueEmitContext& ctx, const IR::Inst& inst) {
 	if (EmitValueFlow(ctx, inst) || EmitValueAlu(ctx, inst) || EmitValueMemory(ctx, inst) ||
-	    EmitValueImage(ctx, inst)) {
+	    EmitValueImage(ctx, inst) || EmitValueRaytracing(ctx, inst)) {
 		return;
 	}
 	ctx.Fail(inst, "has no direct SPIR-V emitter");
@@ -664,6 +664,7 @@ void EmitProgram(EmitterState& state) {
 		}
 	}
 	DefineGetBdaPointer(state);
+	DefineBvhIntersect(state); // raytracing:
 	for (const auto* block: program.blocks) {
 		if (std::ranges::any_of(*block, [](const IR::Inst& inst) {
 			    return inst.GetOpcode() == IR::ValueOpcode::SwizzleU32 ||

@@ -266,6 +266,12 @@ VALUE_OPCODE(DataAppend, U32, U32, U1, U32, U32)
 VALUE_OPCODE(DataConsume, U32, U32, U1, U32, U32)
 VALUE_OPCODE(SwizzleU32, U32, U32, U32, U1)
 
+// raytracing: one hardware BVH node intersection. Every operand is a plain scalar and the
+// opcode is in none of the access tables, so resource tracking and the SRT walker ignore it -
+// the BVH descriptor must never be mistaken for an image descriptor.
+VALUE_OPCODE(BvhIntersectRay, U32x4, U32, U32, U32, U32, U32, U32, F32, F32, F32, F32, F32, F32,
+             F32, F32, F32, F32)
+
 VALUE_OPCODE(ImageQueryDimensions, U32x4, ImageResource, ImageAddress)
 VALUE_OPCODE(ImageQueryLod, U32x4, ImageResource, SamplerResource, ImageAddress)
 VALUE_OPCODE(ImageRead, U32x4, ImageResource, ImageAddress, U1)

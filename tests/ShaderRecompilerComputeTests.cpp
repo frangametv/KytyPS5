@@ -26287,6 +26287,26 @@ void CheckBvhIntersectRayDecode() {
        {0xf19c9f01u, 0x00010100u}},
   };
 
+  // The decode variants above deliberately discard the result, so dead-code elimination
+  // removes the intersection - correct behaviour, but it means they cannot show that the
+  // SPIR-V helper is emitted. This case consumes all four result dwords so it survives.
+  {
+    std::vector<u32> code = {0xf1989f07u, 0x00040505u, 0x4442413du, 0x4543403eu, 0x00004746u};
+    for (u32 dword = 0; dword < 4u; dword++) {
+      AppendStoreVgpr(&code, 5u + dword, dword);
+    }
+    AppendEnd(&code);
+
+    TestCase test;
+    test.name = "BvhIntersectRayEmitsHelper";
+    test.code = code;
+    test.initial = std::vector<u32>(4, 0);
+    test.decoded_counts = {{"IMAGE_BVH_INTERSECT_RAY", 1}};
+    test.required_spirv = {"bvh_intersect_ray", "OpFunctionCall"};
+    (void)CompileCase(test);
+    std::printf("[host]    %-32s ok\n", "BvhIntersectRayEmitsHelper");
+  }
+
   for (const auto &variant : variants) {
     std::vector<u32> code = variant.words;
     AppendEnd(&code);

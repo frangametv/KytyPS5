@@ -430,6 +430,7 @@ struct ShaderInfo {
 	int32_t                          instance_offset_sgpr = -1;
 	bool                             has_bitwise_xor    = false;
 	bool                             uses_dma           = false;
+	bool                             uses_bvh           = false; // raytracing:
 
 	bool operator==(const ShaderInfo& other) const = default;
 };
