@@ -3636,6 +3636,12 @@ void GraphicsInitJmpTablesShIndirect() {
 			                                   value);
 		};
 	}
+	g_hw_sh_indirect_func[Pm4::SPI_SHADER_PGM_RSRC1_ES] = [](KYTY_HW_SH_INDIRECT_ARGS) {
+		HwShIgnoreShaderRegister(cmd_offset, value);
+	};
+	g_hw_sh_indirect_func[Pm4::SPI_SHADER_PGM_RSRC2_ES] = [](KYTY_HW_SH_INDIRECT_ARGS) {
+		HwShIgnoreShaderRegister(cmd_offset, value);
+	};
 	g_hw_sh_indirect_func[Pm4::SPI_SHADER_PGM_CHKSUM_HS] = [](KYTY_HW_SH_INDIRECT_ARGS) {
 		HwShIgnoreShaderRegister(cmd_offset, value);
 	};
