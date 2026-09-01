@@ -264,6 +264,39 @@ static void ValidateSampledDepthBinding(const ShaderRecompiler::IR::ImageResourc
 	     descriptor.fields[5], descriptor.fields[6], descriptor.fields[7]);
 }
 
+// A storage view may address a level past the declared count: it lives in the mip tail, and it
+// exists when adding it does not move the tail. Returns the level count the image needs, or 0.
+static uint32_t StorageTextureLevels(const ShaderTextureResource& descriptor, uint32_t declared) {
+	const auto last = static_cast<uint32_t>(descriptor.LastLevel());
+	if (last < declared) {
+		return declared;
+	}
+	const auto tile = descriptor.TileMode();
+	if (descriptor.Type() == Prospero::ImageType::kColor3D || tile == Prospero::TileMode::kLinear) {
+		return 0;
+	}
+	TileSurfaceLayout      declared_layout {};
+	TileSurfaceLayout      extended_layout {};
+	TileSurfaceDescription surface {descriptor.Format(),
+	                                tile,
+	                                TileSurfaceDimension::Dim2D,
+	                                static_cast<uint32_t>(descriptor.Width5()) + 1u,
+	                                static_cast<uint32_t>(descriptor.Height5()) + 1u,
+	                                1,
+	                                declared,
+	                                1};
+	if (!TileGetTiledTextureLayout(surface, declared_layout) ||
+	    declared_layout.first_tail_level >= declared) {
+		return 0;
+	}
+	surface.levels = last + 1u;
+	if (!TileGetTiledTextureLayout(surface, extended_layout) ||
+	    extended_layout.first_tail_level != declared_layout.first_tail_level) {
+		return 0;
+	}
+	return surface.levels;
+}
+
 static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::ImageResource& resource,
                                                 const ShaderTextureResource& descriptor) {
 	const auto tile              = descriptor.TileMode();
@@ -327,12 +360,16 @@ static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::Imag
 	    IsValidImageSwizzle(swizzle) &&
 	    (swizzle == DstSel(4, 5, 6, 7) || !resource.read || resource.atomic);
 	const auto max_mip = resource.r128 ? descriptor.LastLevel() : descriptor.MaxMip();
+	const auto levels  = StorageTextureLevels(descriptor, static_cast<uint32_t>(max_mip) + 1u);
+	if (levels == 0) {
+		return false;
+	}
 	const auto view_last_level =
 	    resource.mip_mode == ShaderRecompiler::IR::ImageMipMode::DynamicStorage
-	        ? descriptor.LastLevel()
-	        : std::min(descriptor.LastLevel(), max_mip);
+	        ? static_cast<uint32_t>(descriptor.LastLevel())
+	        : std::min(static_cast<uint32_t>(descriptor.LastLevel()), levels - 1u);
 	return (is_1d || is_1d_array || is_2d || is_2d_array || is_3d) && supported_tile &&
-	       descriptor.BaseLevel() <= view_last_level && view_last_level <= max_mip &&
+	       descriptor.BaseLevel() <= view_last_level && view_last_level < levels &&
 	       descriptor.MinLod() == 0 && supported_swizzle && descriptor.BCSwizzle() == 0 &&
 	       !descriptor.MsaaDepth();
 }
@@ -563,16 +600,22 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	const auto type         = TextureType(descriptor);
 	const bool multisampled = IsMultisampledTexture(type);
 	const auto max_mip      = resource.r128 ? last_level : descriptor.MaxMip();
-	const auto levels       = multisampled ? 1u : static_cast<uint32_t>(max_mip) + 1u;
+	auto       levels       = multisampled ? 1u : static_cast<uint32_t>(max_mip) + 1u;
+	if (storage && !multisampled) {
+		levels = StorageTextureLevels(descriptor, levels);
+	}
 	const bool dynamic_storage =
 	    storage && resource.mip_mode == ShaderRecompiler::IR::ImageMipMode::DynamicStorage;
 	const auto view_last_level =
-	    !multisampled && !dynamic_storage ? std::min(last_level, max_mip) : last_level;
+	    !multisampled && !dynamic_storage
+	        ? std::min(static_cast<uint32_t>(last_level), levels != 0 ? levels - 1u : 0u)
+	        : static_cast<uint32_t>(last_level);
 	const auto tile       = descriptor.TileMode();
 	const bool depth_tile = tile == Prospero::TileMode::kDepth;
 	const bool msaa_tile  = depth_tile || tile == Prospero::TileMode::kRenderTarget;
 	const bool msaa_array = type == Prospero::ImageType::kColor2DMsaaArray;
-	if ((!multisampled && (base_level > view_last_level || view_last_level >= levels)) ||
+	if ((!multisampled &&
+	     (levels == 0 || base_level > view_last_level || view_last_level >= levels)) ||
 	    (multisampled &&
 	     (base_level != 0 || last_level == 0 || last_level > 3 || max_mip != last_level ||
 	      !msaa_tile || (descriptor.MsaaDepth() && !depth_tile) ||
