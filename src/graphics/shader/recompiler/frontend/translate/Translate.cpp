@@ -109,6 +109,12 @@ Decoder::Operand Translator::PlainOperand(const Decoder::Operand& operand) {
 	return result;
 }
 
+// A scalar branch on EXEC or VCC is taken by the whole wave, so it tests every lane's bit.
+IR::U1 Translator::AnyLane(IR::U32 low, IR::U32 high) {
+	const auto word = program.wave_size == 32u ? low : ir.BitwiseOr(low, high);
+	return ir.INotEqual(word, IR::U32(IR::Value(0u)));
+}
+
 std::array<IR::U32, 2> Translator::BallotMask(IR::U1 value) {
 	const auto mask = ir.Emit(IR::ValueOpcode::Ballot, {value});
 	return {ir.CompositeExtract(mask, 0),
@@ -376,7 +382,10 @@ void Translator::WriteOperand(const Decoder::Operand& operand, IR::Value value) 
 				const auto mask = BallotMask(IR::U1(value));
 				ir.SetExec(IR::U1(value));
 				ir.SetExecLo(mask[0]);
-				ir.SetExecHi(mask[1]);
+				// In wave32 a lane-mask write touches only the low half; the high half is a free SGPR.
+				if (program.wave_size != 32u) {
+					ir.SetExecHi(mask[1]);
+				}
 				return;
 			}
 			case Decoder::OperandKind::VccLo:
@@ -384,7 +393,9 @@ void Translator::WriteOperand(const Decoder::Operand& operand, IR::Value value) 
 				const auto mask = BallotMask(IR::U1(value));
 				ir.SetVcc(IR::U1(value));
 				ir.SetVccLo(mask[0]);
-				ir.SetVccHi(mask[1]);
+				if (program.wave_size != 32u) {
+					ir.SetVccHi(mask[1]);
+				}
 				return;
 			}
 			default:
@@ -631,8 +642,10 @@ IR::U1 Translator::ReadMask(const Decoder::Operand& operand) {
 			           ? ThreadBit({ReadRawU32(operand), IR::U32(IR::Value(0u))})
 			           : ir.GetVcc();
 		case Decoder::OperandKind::Scc: return ir.GetScc();
-		case Decoder::OperandKind::VccZ: return ir.LogicalNot(ir.GetVcc());
-		case Decoder::OperandKind::ExecZ: return ir.LogicalNot(ir.GetExec());
+		case Decoder::OperandKind::VccZ:
+			return ir.LogicalNot(AnyLane(ir.GetVccLo(), ir.GetVccHi()));
+		case Decoder::OperandKind::ExecZ:
+			return ir.LogicalNot(AnyLane(ir.GetExecLo(), ir.GetExecHi()));
 		default: return ir.INotEqual(ReadRawU32(operand), IR::U32(IR::Value(0u)));
 	}
 }
@@ -746,17 +759,23 @@ void Translator::AddBranchCondition(const CFG::BasicBlock& source, IR::BlockInfo
 	if (source.terminator.kind != CFG::TerminatorKind::ConditionalBranch) {
 		return;
 	}
-	// EXEC and VCC are invocation-local Boolean masks. Branching on that Boolean lets inactive
-	// invocations leave the region without reconstructing a host-subgroup mask.
 	IR::U1 condition;
 	switch (source.terminator.condition) {
 		case CFG::BranchCondition::Always: condition = IR::U1(IR::Value(true)); break;
 		case CFG::BranchCondition::SccZero: condition = ir.LogicalNot(ir.GetScc()); break;
 		case CFG::BranchCondition::SccNonZero: condition = ir.GetScc(); break;
-		case CFG::BranchCondition::VccZero: condition = ir.LogicalNot(ir.GetVcc()); break;
-		case CFG::BranchCondition::VccNonZero: condition = ir.GetVcc(); break;
-		case CFG::BranchCondition::ExecZero: condition = ir.LogicalNot(ir.GetExec()); break;
-		case CFG::BranchCondition::ExecNonZero: condition = ir.GetExec(); break;
+		case CFG::BranchCondition::VccZero:
+			condition = ir.LogicalNot(AnyLane(ir.GetVccLo(), ir.GetVccHi()));
+			break;
+		case CFG::BranchCondition::VccNonZero:
+			condition = AnyLane(ir.GetVccLo(), ir.GetVccHi());
+			break;
+		case CFG::BranchCondition::ExecZero:
+			condition = ir.LogicalNot(AnyLane(ir.GetExecLo(), ir.GetExecHi()));
+			break;
+		case CFG::BranchCondition::ExecNonZero:
+			condition = AnyLane(ir.GetExecLo(), ir.GetExecHi());
+			break;
 		case CFG::BranchCondition::GotoVariable:
 			if (source.terminator.goto_variable == UINT32_MAX) {
 				EXIT("block %u reads an invalid goto variable", source.id);
