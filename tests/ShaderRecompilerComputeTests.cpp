@@ -23914,6 +23914,219 @@ TestCase BvhIntersectRayTriangleMiss() {
 }
 // raytracing: end
 
+// raytracing: begin - the same triangle hit, but with A16 set so the direction and its
+// reciprocal arrive as half pairs in three registers instead of six. The extent and origin
+// stay 32-bit. Direction (0, 0, 1) and its reciprocal are all exactly representable, so the
+// expected result is identical to the 32-bit case and any difference is an unpacking fault.
+TestCase BvhIntersectRayTriangleA16() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  static constexpr u32 kNode[16] = {
+      0x00000000u, 0x00000000u, 0x40000000u, 0x3f800000u, 0x00000000u, 0x40000000u,
+      0x00000000u, 0x3f800000u, 0x40000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u, 0x00000000u, 0x00000009u};
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 0u);
+  AppendVMovLiteral(&code, 1, 0x7149f2cau);
+  AppendVMovLiteral(&code, 2, 0x3e800000u);  // origin (0.25, 0.25, 0), still 32-bit
+  AppendVMovLiteral(&code, 3, 0x3e800000u);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovU32(&code, 5, 0);                // {dir.x, dir.y} = {0, 0}
+  AppendVMovLiteral(&code, 6, 0x7c003c00u);  // {dir.z, inv.x} = {1, +inf}
+  AppendVMovLiteral(&code, 7, 0x3c007c00u);  // {inv.y, inv.z} = {+inf, 1}
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u, 0u, true));
+  for (u32 dword = 0; dword < 4u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 16u, 0u);
+  std::copy(std::begin(kNode), std::end(kNode),
+            memory.begin() + kNodeByteOffset / sizeof(u32));
+
+  TestCase test;
+  test.name = "BvhIntersectRayTriangleA16";
+  test.code = code;
+  test.initial = std::move(memory);
+  test.expected = {0xc0000000u, 0xbf800000u, 0xbe800000u, 0xbe800000u};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0x80000000u;
+  test.user_data[3] = 1u << 24u;
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
+// raytracing: begin - the 64-bit node pointer form, opcode 0xe7. The pointer occupies two
+// registers instead of one and everything after shifts down by one, so this exercises the
+// wide pointer assembly. Same node and ray as the 32-bit box case, so the expected ordering
+// is identical.
+TestCase BvhIntersectRayBvh64BoxNode() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  static constexpr u32 kNode[32] = {
+      0x00000055u, 0x0000005du, 0x00000065u, 0x0000006du, 0xbf800000u, 0xbf800000u,
+      0x42200000u, 0x3f800000u, 0x3f800000u, 0x42240000u, 0xbf800000u, 0xbf800000u,
+      0x41f00000u, 0x3f800000u, 0x3f800000u, 0x41f80000u, 0xbf800000u, 0xbf800000u,
+      0x41a00000u, 0x3f800000u, 0x3f800000u, 0x41a80000u, 0xbf800000u, 0xbf800000u,
+      0x41200000u, 0x3f800000u, 0x3f800000u, 0x41300000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u};
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 5u);   // node pointer low: index 0, kind 5
+  AppendVMovU32(&code, 1, 0u);   // node pointer high
+  AppendVMovLiteral(&code, 2, 0x7149f2cau);
+  AppendVMovU32(&code, 3, 0);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovU32(&code, 5, 0);
+  AppendVMovU32(&code, 6, 0);
+  AppendVMovU32(&code, 7, 0);
+  AppendVMovLiteral(&code, 8, 0x3f800000u);
+  AppendVMovLiteral(&code, 9, 0x7f800000u);
+  AppendVMovLiteral(&code, 10, 0x7f800000u);
+  AppendVMovLiteral(&code, 11, 0x3f800000u);
+  code.push_back(EncodeMimg0(0xe7u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  for (u32 dword = 0; dword < 4u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 32u, 0u);
+  std::copy(std::begin(kNode), std::end(kNode),
+            memory.begin() + kNodeByteOffset / sizeof(u32));
+
+  TestCase test;
+  test.name = "BvhIntersectRayBvh64BoxNode";
+  test.code = code;
+  test.initial = std::move(memory);
+  test.expected = {0x0000006du, 0x00000065u, 0x0000005du, 0x00000055u};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH64_INTERSECT_RAY, O::BUFFER_STORE_DWORD,
+                  O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0x80000000u;
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+
+// raytracing: with box sorting disabled the four children stay in slot order and a miss keeps
+// its slot rather than migrating to the tail. The ray is clipped so the two far boxes miss.
+TestCase BvhIntersectRayBoxNodeUnsorted() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  static constexpr u32 kNode[32] = {
+      0x00000055u, 0x0000005du, 0x00000065u, 0x0000006du, 0xbf800000u, 0xbf800000u,
+      0x42200000u, 0x3f800000u, 0x3f800000u, 0x42240000u, 0xbf800000u, 0xbf800000u,
+      0x41f00000u, 0x3f800000u, 0x3f800000u, 0x41f80000u, 0xbf800000u, 0xbf800000u,
+      0x41a00000u, 0x3f800000u, 0x3f800000u, 0x41a80000u, 0xbf800000u, 0xbf800000u,
+      0x41200000u, 0x3f800000u, 0x3f800000u, 0x41300000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u};
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 5u);
+  AppendVMovLiteral(&code, 1, 0x41c80000u);  // extent 25: the z=30 and z=40 boxes fall outside
+  AppendVMovU32(&code, 2, 0);
+  AppendVMovU32(&code, 3, 0);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovU32(&code, 5, 0);
+  AppendVMovU32(&code, 6, 0);
+  AppendVMovLiteral(&code, 7, 0x3f800000u);
+  AppendVMovLiteral(&code, 8, 0x7f800000u);
+  AppendVMovLiteral(&code, 9, 0x7f800000u);
+  AppendVMovLiteral(&code, 10, 0x3f800000u);
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  for (u32 dword = 0; dword < 4u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 32u, 0u);
+  std::copy(std::begin(kNode), std::end(kNode),
+            memory.begin() + kNodeByteOffset / sizeof(u32));
+
+  TestCase test;
+  test.name = "BvhIntersectRayBoxNodeUnsorted";
+  test.code = code;
+  test.initial = std::move(memory);
+  // slots 0 and 1 are the z=40 and z=30 boxes, beyond the extent
+  test.expected = {0xffffffffu, 0xffffffffu, 0x00000065u, 0x0000006du};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0u;  // box sorting disabled
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
+// raytracing: begin - the same triangle hit, in triangle-ID return mode rather than
+// barycentric. The distance is still reported as a numerator over a denominator, but the last
+// two dwords become the node's stored id plus the index of the triangle within the fan, and an
+// explicit hit flag.
+TestCase BvhIntersectRayTriangleIdMode() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  static constexpr u32 kNode[16] = {
+      0x00000000u, 0x00000000u, 0x40000000u, 0x3f800000u, 0x00000000u, 0x40000000u,
+      0x00000000u, 0x3f800000u, 0x40000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u, 0x00000000u, 0x00000009u};
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 0u);
+  AppendVMovLiteral(&code, 1, 0x7149f2cau);
+  AppendVMovLiteral(&code, 2, 0x3e800000u);
+  AppendVMovLiteral(&code, 3, 0x3e800000u);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovU32(&code, 5, 0);
+  AppendVMovU32(&code, 6, 0);
+  AppendVMovLiteral(&code, 7, 0x3f800000u);
+  AppendVMovLiteral(&code, 8, 0x7f800000u);
+  AppendVMovLiteral(&code, 9, 0x7f800000u);
+  AppendVMovLiteral(&code, 10, 0x3f800000u);
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  for (u32 dword = 0; dword < 4u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 16u, 0u);
+  std::copy(std::begin(kNode), std::end(kNode),
+            memory.begin() + kNodeByteOffset / sizeof(u32));
+
+  TestCase test;
+  test.name = "BvhIntersectRayTriangleIdMode";
+  test.code = code;
+  test.initial = std::move(memory);
+  test.expected = {0xc0000000u, 0xbf800000u, 0x00000009u, 0x00000001u};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0x80000000u;
+  test.user_data[3] = 0u;  // triangle return mode: triangle id
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
 std::vector<TestCase> MakeCases() {
   std::vector<TestCase> cases;
   cases.reserve(128);
@@ -24134,6 +24347,10 @@ std::vector<TestCase> MakeCases() {
   AddCase(BvhIntersectRayFp16BoxNodeSorted);
   AddCase(BvhIntersectRayTriangleBarycentric);
   AddCase(BvhIntersectRayTriangleMiss);
+  AddCase(BvhIntersectRayTriangleA16);
+  AddCase(BvhIntersectRayBvh64BoxNode);
+  AddCase(BvhIntersectRayBoxNodeUnsorted);
+  AddCase(BvhIntersectRayTriangleIdMode);
   // raytracing: end
   AddCase(FlatLoadVariants);
   AddCase(FlatSubdwordLoadsApplyByteOffset);
@@ -28484,6 +28701,14 @@ int main(int argc, char **argv) {
     std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayTriangleBarycentric");
     RunCase(&vulkan, BvhIntersectRayTriangleMiss());
     std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayTriangleMiss");
+    RunCase(&vulkan, BvhIntersectRayTriangleA16());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayTriangleA16");
+    RunCase(&vulkan, BvhIntersectRayBvh64BoxNode());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayBvh64BoxNode");
+    RunCase(&vulkan, BvhIntersectRayBoxNodeUnsorted());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayBoxNodeUnsorted");
+    RunCase(&vulkan, BvhIntersectRayTriangleIdMode());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayTriangleIdMode");
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--bvh-decode-only") == 0) {

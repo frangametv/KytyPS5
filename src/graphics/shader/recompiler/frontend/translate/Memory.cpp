@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <utility>
 
 namespace Libs::Graphics::ShaderRecompiler::Frontend {
 
@@ -647,25 +648,38 @@ IR::U32 Translator::BvhAddressComponent(const Decoder::Instruction& inst, uint32
 	return ReadRawU32(OffsetOperand(base, index));
 }
 
-// Emit one BVH node intersection. A16 packs the direction vectors as half pairs;
-// that form is unobserved so far, so it keeps the fail-safe path rather than untested unpacking.
+// Emit one BVH node intersection. The ray extent and origin are always 32-bit; A16 packs
+// only the direction and its reciprocal into half pairs, saving three address registers.
 bool Translator::IMAGE_BVH_INTERSECT_RAY(const Decoder::Instruction& inst) {
 	const bool a16   = (inst.image_sample_flags & Decoder::ImageSampleFlagA16) != 0;
 	const bool bvh64 = inst.opcode == Decoder::Opcode::IMAGE_BVH64_INTERSECT_RAY;
-	if (a16) {
-		for (uint32_t component = 0; component < 4u; component++) {
-			WriteOperand(OffsetOperand(inst.dst, component), IR::Value(0xffffffffu));
-		}
-		return true;
-	}
 
-	const auto memory = MemoryInfoFromDecoded(inst);
+	const auto memory       = MemoryInfoFromDecoded(inst);
 	const auto pointer_low  = BvhAddressComponent(inst, 0);
 	const auto pointer_high = bvh64 ? BvhAddressComponent(inst, 1) : IR::U32(IR::Value(0u));
 	const auto first        = bvh64 ? 2u : 1u;
-	const auto ray          = [&](uint32_t index) {
-		return IR::F32(ir.Emit(IR::ValueOpcode::BitCastF32U32,
-		                                {BvhAddressComponent(inst, first + index)}));
+	const auto word         = [&](uint32_t index) { return BvhAddressComponent(inst, first + index); };
+	const auto as_float     = [&](IR::U32 value) {
+		return IR::F32(ir.Emit(IR::ValueOpcode::BitCastF32U32, {value}));
+	};
+	const auto half = [&](uint32_t index, bool high) {
+		const auto packed = high ? IR::U32(ir.Emit(IR::ValueOpcode::ShiftRightLogical32,
+		                                           {word(index), IR::Value(16u)}))
+		                         : word(index);
+		const auto narrow = ir.Emit(IR::ValueOpcode::ConvertU16U32, {packed});
+		return IR::F32(ir.Emit(IR::ValueOpcode::ConvertF32F16,
+		                       {ir.Emit(IR::ValueOpcode::BitCastF16U16, {narrow})}));
+	};
+	// Words 0-3 are the extent and origin, always 32-bit. Under A16 the three that follow hold
+	// {dir.x, dir.y}, {dir.z, inv.x} and {inv.y, inv.z} as half pairs.
+	const auto ray = [&](uint32_t index) {
+		if (!a16 || index < 4u) {
+			return as_float(word(index));
+		}
+		static constexpr std::pair<uint32_t, bool> kPacked[6] = {
+		    {4, false}, {4, true}, {5, false}, {5, true}, {6, false}, {6, true}};
+		const auto& source = kPacked[index - 4u];
+		return half(source.first, source.second);
 	};
 
 	const auto result = ir.Emit(
