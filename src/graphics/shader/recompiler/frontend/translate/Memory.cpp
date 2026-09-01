@@ -633,6 +633,15 @@ bool Translator::IMAGE_GET_RESINFO(const Decoder::Instruction& inst) {
 	return true;
 }
 
+// raytracing: traversal is not implemented; return the invalid-node sentinel so a box node
+// reports no hit children and the guest traversal unwinds instead of re-entering the tree
+bool Translator::IMAGE_BVH_INTERSECT_RAY(const Decoder::Instruction& inst) {
+	for (uint32_t component = 0; component < 4u; component++) {
+		WriteOperand(OffsetOperand(inst.dst, component), IR::Value(0xffffffffu));
+	}
+	return true;
+}
+
 bool Translator::IMAGE_GET_LOD(const Decoder::Instruction& inst) {
 	const auto memory   = MemoryInfoFromDecoded(inst);
 	const auto resource = GetImageResource(memory);
@@ -1032,6 +1041,9 @@ bool Translator::EmitMemory(const Decoder::Instruction& inst) {
 
 		case Decoder::Opcode::IMAGE_GET_RESINFO: return IMAGE_GET_RESINFO(inst);
 		case Decoder::Opcode::IMAGE_GET_LOD: return IMAGE_GET_LOD(inst);
+		case Decoder::Opcode::IMAGE_BVH_INTERSECT_RAY:   // raytracing:
+		case Decoder::Opcode::IMAGE_BVH64_INTERSECT_RAY: // raytracing:
+			return IMAGE_BVH_INTERSECT_RAY(inst);
 		case Decoder::Opcode::IMAGE_LOAD:
 		case Decoder::Opcode::IMAGE_LOAD_MIP: return IMAGE_LOAD(inst);
 		case Decoder::Opcode::IMAGE_STORE:

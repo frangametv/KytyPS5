@@ -552,7 +552,10 @@ std::string InstructionToString(const Instruction& inst) {
 		case Opcode::IMAGE_GATHER4_LZ_O:
 		case Opcode::IMAGE_GATHER4_C_O:
 		case Opcode::IMAGE_GATHER4_C_LZ_O:
-		case Opcode::IMAGE_GATHER4H: return WithUnsupportedReason(inst, FormatMimg(inst));
+		case Opcode::IMAGE_GATHER4H:
+		case Opcode::IMAGE_BVH_INTERSECT_RAY:   // raytracing:
+		case Opcode::IMAGE_BVH64_INTERSECT_RAY: // raytracing:
+			return WithUnsupportedReason(inst, FormatMimg(inst));
 		case Opcode::S_LOAD_DWORD:
 		case Opcode::S_LOAD_DWORDX2:
 		case Opcode::S_LOAD_DWORDX4:

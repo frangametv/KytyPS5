@@ -26264,6 +26264,42 @@ void CheckShaderRecompilerFatalContracts() {
 }
 #endif
 
+// raytracing: BVH decode coverage. The first case is the exact instruction captured from
+// Astro's Playroom compute shader 0x0000000500571000 at pc 0x2190, the K#1 blocker. The
+// rest come from raytracing/harness, compiled by the platform shader compiler, and cover
+// both opcodes in the NSA and sequential-address encodings.
+void CheckBvhIntersectRayDecode() {
+  struct Variant {
+    const char *name;
+    const char *decoded;
+    std::vector<u32> words;
+  };
+  const std::vector<Variant> variants = {
+      {"BvhIntersectRayAstroCapture", "IMAGE_BVH_INTERSECT_RAY",
+       {0xf1989f07u, 0x00040505u, 0x4442413du, 0x4543403eu, 0x00004746u}},
+      {"BvhIntersectRayBvh32Nsa", "IMAGE_BVH_INTERSECT_RAY",
+       {0xf1989f07u, 0x00010004u, 0x01010100u, 0x03020101u, 0x00000203u}},
+      {"BvhIntersectRayBvh32Sequential", "IMAGE_BVH_INTERSECT_RAY",
+       {0xf1989f01u, 0x00010100u}},
+      {"BvhIntersectRayBvh64Nsa", "IMAGE_BVH64_INTERSECT_RAY",
+       {0xf19c9f07u, 0x00010004u, 0x01010001u, 0x02010101u, 0x00020303u}},
+      {"BvhIntersectRayBvh64Sequential", "IMAGE_BVH64_INTERSECT_RAY",
+       {0xf19c9f01u, 0x00010100u}},
+  };
+
+  for (const auto &variant : variants) {
+    std::vector<u32> code = variant.words;
+    AppendEnd(&code);
+
+    TestCase test;
+    test.name = variant.name;
+    test.code = code;
+    test.decoded_counts = {{variant.decoded, 1}};
+    (void)CompileCase(test);
+    std::printf("[host]    %-32s ok\n", variant.name);
+  }
+}
+
 void CheckStorageTextureVolumeUploadLayout() {
   constexpr auto format = Prospero::BufferFormat::k16_16_16_16Float;
   constexpr uint32_t width = 33;
@@ -28194,6 +28230,10 @@ int main(int argc, char **argv) {
     RunGraphicsCase(&vulkan, GraphicsPositionWExport());
     return 0;
   }
+  if (argc == 2 && std::strcmp(argv[1], "--bvh-decode-only") == 0) { // raytracing:
+    CheckBvhIntersectRayDecode();
+    return 0;
+  }
   if (argc == 2 && std::strcmp(argv[1], "--clip-control-only") == 0) {
     CheckClipControlDepthClipState();
     return 0;
@@ -28496,6 +28536,7 @@ int main(int argc, char **argv) {
 #endif
   CheckImageSamplerSpecialization();
   CheckNativeImageDescriptorTypes();
+  CheckBvhIntersectRayDecode(); // raytracing:
   CheckClipControlDepthClipState();
   CheckReferenceClockScale();
   CheckErrorDialogLifecycle();
