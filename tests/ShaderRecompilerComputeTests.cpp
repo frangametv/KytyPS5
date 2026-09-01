@@ -23754,6 +23754,58 @@ TestCase BvhIntersectRayBoxNodeSorted() {
 }
 // raytracing: end
 
+// raytracing: begin - the fp16 box node, same geometry as the fp32 case so the expected
+// ordering is identical. Every coordinate is exactly representable as a half, so the packed
+// unpack is checked without any rounding slack. Six halves per child sit in three dwords as
+// min = (lo0, hi0, lo1) and max = (hi1, lo2, hi2).
+TestCase BvhIntersectRayFp16BoxNodeSorted() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  static constexpr u32 kNode[16] = {
+      0x00000055u, 0x0000005du, 0x00000065u, 0x0000006du, 0xbc00bc00u, 0x3c005100u,
+      0x51203c00u, 0xbc00bc00u, 0x3c004f80u, 0x4fc03c00u, 0xbc00bc00u, 0x3c004d00u,
+      0x4d403c00u, 0xbc00bc00u, 0x3c004900u, 0x49803c00u};
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 4u);  // node pointer: index 0, kind 4 (fp16 box)
+  AppendVMovLiteral(&code, 1, 0x7149f2cau);
+  AppendVMovU32(&code, 2, 0);
+  AppendVMovU32(&code, 3, 0);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovU32(&code, 5, 0);
+  AppendVMovU32(&code, 6, 0);
+  AppendVMovLiteral(&code, 7, 0x3f800000u);
+  AppendVMovLiteral(&code, 8, 0x7f800000u);
+  AppendVMovLiteral(&code, 9, 0x7f800000u);
+  AppendVMovLiteral(&code, 10, 0x3f800000u);
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  for (u32 dword = 0; dword < 4u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 16u, 0u);
+  std::copy(std::begin(kNode), std::end(kNode),
+            memory.begin() + kNodeByteOffset / sizeof(u32));
+
+  TestCase test;
+  test.name = "BvhIntersectRayFp16BoxNodeSorted";
+  test.code = code;
+  test.initial = std::move(memory);
+  test.expected = {0x0000006du, 0x00000065u, 0x0000005du, 0x00000055u};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0x80000000u;
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
 std::vector<TestCase> MakeCases() {
   std::vector<TestCase> cases;
   cases.reserve(128);
@@ -23971,6 +24023,7 @@ std::vector<TestCase> MakeCases() {
   AddCase(TBufferStoreVariants);
   // raytracing: begin
   AddCase(BvhIntersectRayBoxNodeSorted);
+  AddCase(BvhIntersectRayFp16BoxNodeSorted);
   // raytracing: end
   AddCase(FlatLoadVariants);
   AddCase(FlatSubdwordLoadsApplyByteOffset);
@@ -28315,6 +28368,8 @@ int main(int argc, char **argv) {
     VulkanHarness vulkan;
     RunCase(&vulkan, BvhIntersectRayBoxNodeSorted());
     std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayBoxNodeSorted");
+    RunCase(&vulkan, BvhIntersectRayFp16BoxNodeSorted());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayFp16BoxNodeSorted");
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--bvh-decode-only") == 0) {
