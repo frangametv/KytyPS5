@@ -3,6 +3,19 @@
 #include <array>
 
 namespace Libs::Graphics::ShaderRecompiler::Frontend {
+namespace {
+
+bool IsExecOrVcc(const Decoder::Operand& operand) {
+	switch (operand.kind) {
+		case Decoder::OperandKind::ExecLo:
+		case Decoder::OperandKind::ExecHi:
+		case Decoder::OperandKind::VccLo:
+		case Decoder::OperandKind::VccHi: return true;
+		default: return false;
+	}
+}
+
+} // namespace
 
 bool Translator::Integer16Shift(const Decoder::Instruction& inst, IR::ValueOpcode opcode,
                                 bool arithmetic) {
