@@ -225,9 +225,14 @@ uint32_t EmitDispatcherNextPc(ValueEmitContext& ctx, const DispatcherFunctionSta
 
 void EmitDirectInstruction(ValueEmitContext& ctx, const IR::Inst& inst) {
 	if (EmitValueFlow(ctx, inst) || EmitValueAlu(ctx, inst) || EmitValueMemory(ctx, inst) ||
-	    EmitValueImage(ctx, inst) || EmitValueRaytracing(ctx, inst)) {
+	    EmitValueImage(ctx, inst)) {
 		return;
 	}
+	// raytracing: begin - BVH intersection has its own emitter
+	if (EmitValueRaytracing(ctx, inst)) {
+		return;
+	}
+	// raytracing: end
 	ctx.Fail(inst, "has no direct SPIR-V emitter");
 }
 
@@ -664,7 +669,9 @@ void EmitProgram(EmitterState& state) {
 		}
 	}
 	DefineGetBdaPointer(state);
-	DefineBvhIntersect(state); // raytracing:
+	// raytracing: begin - emit the BVH helper before main, like the BDA helper
+	DefineBvhIntersect(state);
+	// raytracing: end
 	for (const auto* block: program.blocks) {
 		if (std::ranges::any_of(*block, [](const IR::Inst& inst) {
 			    return inst.GetOpcode() == IR::ValueOpcode::SwizzleU32 ||

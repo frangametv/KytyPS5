@@ -233,9 +233,10 @@ Opcode DecodeMimgOpcode(uint32_t opcode, const MimgSampleInfo* sample, const Mim
 		case 0x09u: return Opcode::IMAGE_STORE_MIP;
 		case 0x0eu: return Opcode::IMAGE_GET_RESINFO;
 		case 0x60u: return Opcode::IMAGE_GET_LOD;
-		// raytracing: hardware BVH traversal step, see raytracing/spec-bvh.md
+		// raytracing: begin - hardware BVH traversal step, see raytracing/spec-bvh.md
 		case 0xe6u: return Opcode::IMAGE_BVH_INTERSECT_RAY;
 		case 0xe7u: return Opcode::IMAGE_BVH64_INTERSECT_RAY;
+		// raytracing: end
 		default: return Opcode::UNSUPPORTED;
 	}
 }
@@ -250,7 +251,7 @@ uint32_t DecodeMimgSampleFlags(const MimgSampleInfo* sample, const MimgGatherInf
 	return 0;
 }
 
-uint32_t DecodeMimgAddressComponents(uint32_t opcode, ImageDimension dimension, bool a16,
+uint32_t DecodeMimgAddressComponents(uint32_t opcode, ImageDimension dimension,
                                      const MimgSampleInfo* sample, const MimgGatherInfo* gather,
                                      const Detail::OpcodeMap* atomic) {
 	if (sample != nullptr) {
@@ -270,10 +271,6 @@ uint32_t DecodeMimgAddressComponents(uint32_t opcode, ImageDimension dimension, 
 		case 0x00u:
 		case 0x08u:
 		case 0x60u: return ImageCoordComponents(dimension);
-		// raytracing: node pointer, ray extent, origin, direction, inverse direction;
-		// A16 packs only direction and inverse direction, and bvh64 splits the pointer in two
-		case 0xe6u: return a16 ? 8u : 11u;
-		case 0xe7u: return a16 ? 9u : 12u;
 		default: return 0;
 	}
 }
@@ -364,7 +361,15 @@ void DecodeMimg(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index
 		inst.image_nsa_addr[i] = (code[word_index + 2u + i / 4u] >> ((i % 4u) * 8u)) & 0xffu;
 	}
 	inst.image_address_components =
-	    DecodeMimgAddressComponents(opcode, dimension, a16, sample, gather, atomic);
+	    DecodeMimgAddressComponents(opcode, dimension, sample, gather, atomic);
+	// raytracing: begin - node pointer, ray extent, origin, direction and inverse direction.
+	// A16 packs only the two direction vectors, and bvh64 splits the pointer across two.
+	if (opcode == 0xe6u) {
+		inst.image_address_components = a16 ? 8u : 11u;
+	} else if (opcode == 0xe7u) {
+		inst.image_address_components = a16 ? 9u : 12u;
+	}
+	// raytracing: end
 	SetRawWords(inst, code, word_index, word_count);
 
 	if (inst.opcode == Opcode::UNSUPPORTED) {

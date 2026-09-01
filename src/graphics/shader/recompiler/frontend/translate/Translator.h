@@ -90,8 +90,10 @@ private:
 	bool FLAT_STORE(const Decoder::Instruction& inst);
 	bool IMAGE_GET_RESINFO(const Decoder::Instruction& inst);
 	bool IMAGE_GET_LOD(const Decoder::Instruction& inst);
-	bool IMAGE_BVH_INTERSECT_RAY(const Decoder::Instruction& inst); // raytracing:
-	IR::U32 BvhAddressComponent(const Decoder::Instruction& inst, uint32_t index); // raytracing:
+	// raytracing: begin
+	bool    IMAGE_BVH_INTERSECT_RAY(const Decoder::Instruction& inst);
+	IR::U32 BvhAddressComponent(const Decoder::Instruction& inst, uint32_t index);
+	// raytracing: end
 	bool IMAGE_LOAD(const Decoder::Instruction& inst);
 	bool IMAGE_STORE(const Decoder::Instruction& inst);
 	bool IMAGE_SAMPLE(const Decoder::Instruction& inst);

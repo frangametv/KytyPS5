@@ -23698,7 +23698,7 @@ TestCase DispatcherIrreducibleControlFlow() {
   return test;
 }
 
-// raytracing: execute one fp32 box-node intersection against a hand-built BVH whose answer
+// raytracing: begin - execute one fp32 box-node intersection against a hand-built BVH whose answer
 // is arithmetically obvious. Four unit boxes sit along +Z at z = 40, 30, 20, 10 in slot order,
 // so a ray down +Z from the origin hits all four and the distance sort must return them
 // exactly reversed. Node lives at guest 0x10000; the descriptor holds that base in 256-byte
@@ -23752,6 +23752,7 @@ TestCase BvhIntersectRayBoxNodeSorted() {
   test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
   return test;
 }
+// raytracing: end
 
 std::vector<TestCase> MakeCases() {
   std::vector<TestCase> cases;
@@ -23968,7 +23969,9 @@ std::vector<TestCase> MakeCases() {
   AddCase(TBufferStoreFormatXy88IntegerComponents);
   AddCase(TBufferLoadFormatXy88IntegerComponents);
   AddCase(TBufferStoreVariants);
-  AddCase(BvhIntersectRayBoxNodeSorted); // raytracing:
+  // raytracing: begin
+  AddCase(BvhIntersectRayBoxNodeSorted);
+  // raytracing: end
   AddCase(FlatLoadVariants);
   AddCase(FlatSubdwordLoadsApplyByteOffset);
   AddCase(FlatVirtualAddressRebasesGuestAllocation);
@@ -26320,7 +26323,7 @@ void CheckShaderRecompilerFatalContracts() {
 }
 #endif
 
-// raytracing: BVH decode coverage. The first case is the exact instruction captured from
+// raytracing: begin - BVH decode coverage. The first case is the exact instruction captured from
 // Astro's Playroom compute shader 0x0000000500571000 at pc 0x2190, the K#1 blocker. The
 // rest come from raytracing/harness, compiled by the platform shader compiler, and cover
 // both opcodes in the NSA and sequential-address encodings.
@@ -26375,6 +26378,7 @@ void CheckBvhIntersectRayDecode() {
     std::printf("[host]    %-32s ok\n", variant.name);
   }
 }
+// raytracing: end
 
 void CheckStorageTextureVolumeUploadLayout() {
   constexpr auto format = Prospero::BufferFormat::k16_16_16_16Float;
@@ -28306,16 +28310,18 @@ int main(int argc, char **argv) {
     RunGraphicsCase(&vulkan, GraphicsPositionWExport());
     return 0;
   }
-  if (argc == 2 && std::strcmp(argv[1], "--bvh-exec-only") == 0) { // raytracing:
+  // raytracing: begin
+  if (argc == 2 && std::strcmp(argv[1], "--bvh-exec-only") == 0) {
     VulkanHarness vulkan;
     RunCase(&vulkan, BvhIntersectRayBoxNodeSorted());
     std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayBoxNodeSorted");
     return 0;
   }
-  if (argc == 2 && std::strcmp(argv[1], "--bvh-decode-only") == 0) { // raytracing:
+  if (argc == 2 && std::strcmp(argv[1], "--bvh-decode-only") == 0) {
     CheckBvhIntersectRayDecode();
     return 0;
   }
+  // raytracing: end
   if (argc == 2 && std::strcmp(argv[1], "--clip-control-only") == 0) {
     CheckClipControlDepthClipState();
     return 0;
@@ -28618,7 +28624,9 @@ int main(int argc, char **argv) {
 #endif
   CheckImageSamplerSpecialization();
   CheckNativeImageDescriptorTypes();
-  CheckBvhIntersectRayDecode(); // raytracing:
+  // raytracing: begin
+  CheckBvhIntersectRayDecode();
+  // raytracing: end
   CheckClipControlDepthClipState();
   CheckReferenceClockScale();
   CheckErrorDialogLifecycle();

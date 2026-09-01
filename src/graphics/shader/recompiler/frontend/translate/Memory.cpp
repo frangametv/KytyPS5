@@ -633,8 +633,8 @@ bool Translator::IMAGE_GET_RESINFO(const Decoder::Instruction& inst) {
 	return true;
 }
 
-// raytracing: one address component, from the NSA payload when present and from the
-// sequential run after vaddr otherwise.
+// raytracing: begin - one address component, from the NSA payload when present and from
+// the sequential run after vaddr otherwise.
 IR::U32 Translator::BvhAddressComponent(const Decoder::Instruction& inst, uint32_t index) {
 	const auto base = PlainOperand(inst.src0);
 	if (index == 0) {
@@ -647,7 +647,7 @@ IR::U32 Translator::BvhAddressComponent(const Decoder::Instruction& inst, uint32
 	return ReadRawU32(OffsetOperand(base, index));
 }
 
-// raytracing: emit one BVH node intersection. A16 packs the direction vectors as half pairs;
+// Emit one BVH node intersection. A16 packs the direction vectors as half pairs;
 // that form is unobserved so far, so it keeps the fail-safe path rather than untested unpacking.
 bool Translator::IMAGE_BVH_INTERSECT_RAY(const Decoder::Instruction& inst) {
 	const bool a16   = (inst.image_sample_flags & Decoder::ImageSampleFlagA16) != 0;
@@ -681,6 +681,7 @@ bool Translator::IMAGE_BVH_INTERSECT_RAY(const Decoder::Instruction& inst) {
 	}
 	return true;
 }
+// raytracing: end
 
 bool Translator::IMAGE_GET_LOD(const Decoder::Instruction& inst) {
 	const auto memory   = MemoryInfoFromDecoded(inst);
@@ -1081,9 +1082,11 @@ bool Translator::EmitMemory(const Decoder::Instruction& inst) {
 
 		case Decoder::Opcode::IMAGE_GET_RESINFO: return IMAGE_GET_RESINFO(inst);
 		case Decoder::Opcode::IMAGE_GET_LOD: return IMAGE_GET_LOD(inst);
-		case Decoder::Opcode::IMAGE_BVH_INTERSECT_RAY:   // raytracing:
-		case Decoder::Opcode::IMAGE_BVH64_INTERSECT_RAY: // raytracing:
+		// raytracing: begin
+		case Decoder::Opcode::IMAGE_BVH_INTERSECT_RAY:
+		case Decoder::Opcode::IMAGE_BVH64_INTERSECT_RAY:
 			return IMAGE_BVH_INTERSECT_RAY(inst);
+		// raytracing: end
 		case Decoder::Opcode::IMAGE_LOAD:
 		case Decoder::Opcode::IMAGE_LOAD_MIP: return IMAGE_LOAD(inst);
 		case Decoder::Opcode::IMAGE_STORE:

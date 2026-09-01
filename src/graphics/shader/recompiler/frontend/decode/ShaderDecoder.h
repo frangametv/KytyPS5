@@ -557,8 +557,10 @@ enum class Opcode {
 	IMAGE_GATHER4_C_O,
 	IMAGE_GATHER4_C_LZ_O,
 	IMAGE_GATHER4H,
-	IMAGE_BVH_INTERSECT_RAY,   // raytracing: BVH node intersection, one traversal step
-	IMAGE_BVH64_INTERSECT_RAY, // raytracing: 64-bit node pointer variant
+	// raytracing: begin - BVH node intersection, one traversal step; 64-bit pointer variant
+	IMAGE_BVH_INTERSECT_RAY,
+	IMAGE_BVH64_INTERSECT_RAY,
+	// raytracing: end
 	V_INTERP_P1_F32,
 	V_INTERP_P2_F32,
 	V_INTERP_MOV_F32,
