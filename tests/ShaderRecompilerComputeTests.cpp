@@ -24127,6 +24127,56 @@ TestCase BvhIntersectRayTriangleIdMode() {
 }
 // raytracing: end
 
+// raytracing: begin - node kind 7 is a user/procedural node, which the hardware does not
+// intersect; it reports no hit and leaves the guest to handle the primitive itself. Kind 6 is
+// reserved on base PS5. Both must fail safe rather than reading the node as geometry, so the
+// guest traversal unwinds instead of following a garbage child pointer. The node memory here
+// is deliberately filled with a pattern that would look like plausible children if it were
+// ever decoded as a box.
+TestCase BvhIntersectRayUserNodeMisses() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 7u);  // node pointer: index 0, kind 7 (user / procedural)
+  AppendVMovLiteral(&code, 1, 0x7149f2cau);
+  AppendVMovU32(&code, 2, 0);
+  AppendVMovU32(&code, 3, 0);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovU32(&code, 5, 0);
+  AppendVMovU32(&code, 6, 0);
+  AppendVMovLiteral(&code, 7, 0x3f800000u);
+  AppendVMovLiteral(&code, 8, 0x7f800000u);
+  AppendVMovLiteral(&code, 9, 0x7f800000u);
+  AppendVMovLiteral(&code, 10, 0x3f800000u);
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  for (u32 dword = 0; dword < 4u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 32u, 0u);
+  for (u32 index = 0; index < 32u; index++) {
+    memory[kNodeByteOffset / sizeof(u32) + index] = 0x00000045u + index;
+  }
+
+  TestCase test;
+  test.name = "BvhIntersectRayUserNodeMisses";
+  test.code = code;
+  test.initial = std::move(memory);
+  test.expected = {0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0x80000000u;
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
 std::vector<TestCase> MakeCases() {
   std::vector<TestCase> cases;
   cases.reserve(128);
@@ -24351,6 +24401,7 @@ std::vector<TestCase> MakeCases() {
   AddCase(BvhIntersectRayBvh64BoxNode);
   AddCase(BvhIntersectRayBoxNodeUnsorted);
   AddCase(BvhIntersectRayTriangleIdMode);
+  AddCase(BvhIntersectRayUserNodeMisses);
   // raytracing: end
   AddCase(FlatLoadVariants);
   AddCase(FlatSubdwordLoadsApplyByteOffset);
@@ -28709,6 +28760,8 @@ int main(int argc, char **argv) {
     std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayBoxNodeUnsorted");
     RunCase(&vulkan, BvhIntersectRayTriangleIdMode());
     std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayTriangleIdMode");
+    RunCase(&vulkan, BvhIntersectRayUserNodeMisses());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayUserNodeMisses");
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--bvh-decode-only") == 0) {
