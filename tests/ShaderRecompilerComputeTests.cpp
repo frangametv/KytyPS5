@@ -23806,6 +23806,114 @@ TestCase BvhIntersectRayFp16BoxNodeSorted() {
 }
 // raytracing: end
 
+// raytracing: begin - triangle node, barycentric return mode. A triangle sits in the z = 2
+// plane and a ray goes down +Z from (0.25, 0.25, 0), so it hits at t = 2 with barycentrics
+// (0.25, 0.25). The hardware reports the distance unnormalised, as numerator and denominator,
+// and the barycentrics likewise, so the expected dwords are -2, -1, -0.25, -0.25. The node's
+// last dword maps which barycentric is reported in which slot; 0x9 is the identity for
+// triangle 0.
+TestCase BvhIntersectRayTriangleBarycentric() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  static constexpr u32 kNode[16] = {
+      0x00000000u, 0x00000000u, 0x40000000u, 0x3f800000u, 0x00000000u, 0x40000000u,
+      0x00000000u, 0x3f800000u, 0x40000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u, 0x00000000u, 0x00000009u};
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 0u);  // node pointer: index 0, kind 0 (first triangle of the fan)
+  AppendVMovLiteral(&code, 1, 0x7149f2cau);
+  AppendVMovLiteral(&code, 2, 0x3e800000u);  // origin (0.25, 0.25, 0)
+  AppendVMovLiteral(&code, 3, 0x3e800000u);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovU32(&code, 5, 0);                // direction (0, 0, 1)
+  AppendVMovU32(&code, 6, 0);
+  AppendVMovLiteral(&code, 7, 0x3f800000u);
+  AppendVMovLiteral(&code, 8, 0x7f800000u);  // inverse direction, unused by this path
+  AppendVMovLiteral(&code, 9, 0x7f800000u);
+  AppendVMovLiteral(&code, 10, 0x3f800000u);
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  for (u32 dword = 0; dword < 4u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 16u, 0u);
+  std::copy(std::begin(kNode), std::end(kNode),
+            memory.begin() + kNodeByteOffset / sizeof(u32));
+
+  TestCase test;
+  test.name = "BvhIntersectRayTriangleBarycentric";
+  test.code = code;
+  test.initial = std::move(memory);
+  test.expected = {0xc0000000u, 0xbf800000u, 0xbe800000u, 0xbe800000u};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0x80000000u;
+  test.user_data[3] = 1u << 24u;  // triangle return mode: barycentric
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
+// raytracing: begin - the same triangle, missed. From (0.9, 0.9, 0) the barycentrics sum
+// above one, so the ray passes outside the triangle. There is no hit flag in barycentric
+// mode: a miss is reported as an infinite distance numerator over a denominator of one, and
+// the caller detects it from the numerator. Only those two dwords are checked, because the
+// hardware leaves the barycentric slots untouched on a miss.
+TestCase BvhIntersectRayTriangleMiss() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  static constexpr u32 kNode[16] = {
+      0x00000000u, 0x00000000u, 0x40000000u, 0x3f800000u, 0x00000000u, 0x40000000u,
+      0x00000000u, 0x3f800000u, 0x40000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u, 0x00000000u, 0x00000009u};
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 0u);
+  AppendVMovLiteral(&code, 1, 0x7149f2cau);
+  AppendVMovLiteral(&code, 2, 0x3f666666u);  // origin (0.9, 0.9, 0)
+  AppendVMovLiteral(&code, 3, 0x3f666666u);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovU32(&code, 5, 0);
+  AppendVMovU32(&code, 6, 0);
+  AppendVMovLiteral(&code, 7, 0x3f800000u);
+  AppendVMovLiteral(&code, 8, 0x7f800000u);
+  AppendVMovLiteral(&code, 9, 0x7f800000u);
+  AppendVMovLiteral(&code, 10, 0x3f800000u);
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  AppendStoreVgpr(&code, 16u, 0u);
+  AppendStoreVgpr(&code, 17u, 1u);
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 16u, 0u);
+  std::copy(std::begin(kNode), std::end(kNode),
+            memory.begin() + kNodeByteOffset / sizeof(u32));
+
+  TestCase test;
+  test.name = "BvhIntersectRayTriangleMiss";
+  test.code = code;
+  test.initial = std::move(memory);
+  test.expected = {0x7f800000u, 0x3f800000u};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0x80000000u;
+  test.user_data[3] = 1u << 24u;
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
 std::vector<TestCase> MakeCases() {
   std::vector<TestCase> cases;
   cases.reserve(128);
@@ -24024,6 +24132,8 @@ std::vector<TestCase> MakeCases() {
   // raytracing: begin
   AddCase(BvhIntersectRayBoxNodeSorted);
   AddCase(BvhIntersectRayFp16BoxNodeSorted);
+  AddCase(BvhIntersectRayTriangleBarycentric);
+  AddCase(BvhIntersectRayTriangleMiss);
   // raytracing: end
   AddCase(FlatLoadVariants);
   AddCase(FlatSubdwordLoadsApplyByteOffset);
@@ -28370,6 +28480,10 @@ int main(int argc, char **argv) {
     std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayBoxNodeSorted");
     RunCase(&vulkan, BvhIntersectRayFp16BoxNodeSorted());
     std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayFp16BoxNodeSorted");
+    RunCase(&vulkan, BvhIntersectRayTriangleBarycentric());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayTriangleBarycentric");
+    RunCase(&vulkan, BvhIntersectRayTriangleMiss());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayTriangleMiss");
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--bvh-decode-only") == 0) {

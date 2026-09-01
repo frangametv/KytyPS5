@@ -68,10 +68,56 @@ uint32_t ResolvePage(EmitterState& state, uint32_t address) {
 	return result;
 }
 
+using Vec3 = std::array<uint32_t, 3>;
+
+Vec3 Subtract(EmitterState& state, const Vec3& a, const Vec3& b) {
+	const auto f32 = TypeF32(state);
+	return {Op2(state, OpFSub, f32, a[0], b[0]), Op2(state, OpFSub, f32, a[1], b[1]),
+	        Op2(state, OpFSub, f32, a[2], b[2])};
+}
+
+uint32_t Dot(EmitterState& state, const Vec3& a, const Vec3& b) {
+	const auto f32 = TypeF32(state);
+	const auto xy  = Op2(state, OpFAdd, f32, Op2(state, OpFMul, f32, a[0], b[0]),
+	                     Op2(state, OpFMul, f32, a[1], b[1]));
+	return Op2(state, OpFAdd, f32, xy, Op2(state, OpFMul, f32, a[2], b[2]));
+}
+
+Vec3 Cross(EmitterState& state, const Vec3& a, const Vec3& b) {
+	const auto f32   = TypeF32(state);
+	const auto term  = [&](uint32_t i, uint32_t j) {
+		return Op2(state, OpFSub, f32, Op2(state, OpFMul, f32, a[i], b[j]),
+                   Op2(state, OpFMul, f32, a[j], b[i]));
+	};
+	return {term(1, 2), term(2, 0), term(0, 1)};
+}
+
+// Pick one of four values by node kind, which doubles as the index of the triangle within
+// a fan node.
+uint32_t SelectByKind(EmitterState& state, uint32_t kind, uint32_t a, uint32_t b, uint32_t c,
+                      uint32_t d) {
+	const auto bool_type = TypeBool(state);
+	const auto type      = TypeF32(state);
+	const auto is0 = Op2(state, OpIEqual, bool_type, kind, ConstantU32(state, 0));
+	const auto is1 = Op2(state, OpIEqual, bool_type, kind, ConstantU32(state, 1));
+	const auto is2 = Op2(state, OpIEqual, bool_type, kind, ConstantU32(state, 2));
+	const auto cd  = Op3(state, OpSelect, type, is2, c, d);
+	const auto bcd = Op3(state, OpSelect, type, is1, b, cd);
+	return Op3(state, OpSelect, type, is0, a, bcd);
+}
+
+Vec3 SelectVertexByKind(EmitterState& state, uint32_t kind, const Vec3& a, const Vec3& b,
+                        const Vec3& c, const Vec3& d) {
+	return {SelectByKind(state, kind, a[0], b[0], c[0], d[0]),
+	        SelectByKind(state, kind, a[1], b[1], c[1], d[1]),
+	        SelectByKind(state, kind, a[2], b[2], c[2], d[2])};
+}
+
 struct Ray {
-	uint32_t                extent;
-	std::array<uint32_t, 3> origin;
-	std::array<uint32_t, 3> inverse;
+	uint32_t extent;
+	Vec3     origin;
+	Vec3     direction;
+	Vec3     inverse;
 };
 
 // One ray/AABB slab test. Returns the near distance and whether the box was hit, using the
@@ -82,8 +128,8 @@ struct SlabResult {
 	uint32_t hit;
 };
 
-SlabResult Slab(EmitterState& state, const Ray& ray, const std::array<uint32_t, 3>& box_min,
-                const std::array<uint32_t, 3>& box_max, uint32_t grow_scale) {
+SlabResult Slab(EmitterState& state, const Ray& ray, const Vec3& box_min, const Vec3& box_max,
+                uint32_t grow_scale) {
 	const auto f32  = TypeF32(state);
 	const auto bool_type = TypeBool(state);
 	const auto zero = ConstantF32(state, 0x00000000u);
@@ -221,18 +267,17 @@ void DefineBvhIntersect(EmitterState& state) {
 	        Op2(state, OpIMul, address, node_index, ConstantAddress(state, NodeSize)));
 
 	const Ray ray {
-	    .extent  = real[0],
-	    .origin  = {real[1], real[2], real[3]},
-	    .inverse = {real[7], real[8], real[9]},
+	    .extent    = real[0],
+	    .origin    = {real[1], real[2], real[3]},
+	    .direction = {real[4], real[5], real[6]},
+	    .inverse   = {real[7], real[8], real[9]},
 	};
 
 	// Two box-node encodings share the same intersection; only the load differs. A 128-byte
 	// fp32 node spans two 64-byte units that may sit in different caching pages, so it needs
 	// two page resolves; a 64-byte fp16 node needs one.
-	const auto intersect = [&](std::array<uint32_t, 4> child,
-	                           const std::array<std::array<uint32_t, 3>, 4>& box_min,
-	                           const std::array<std::array<uint32_t, 3>, 4>& box_max,
-	                           uint32_t mapped) {
+	const auto intersect = [&](std::array<uint32_t, 4> child, const std::array<Vec3, 4>& box_min,
+	                           const std::array<Vec3, 4>& box_max, uint32_t mapped) {
 		std::array<uint32_t, 4> key {};
 		for (uint32_t slot = 0; slot < 4u; slot++) {
 			const auto slab = Slab(state, ray, box_min[slot], box_max[slot], grow_scale);
@@ -270,8 +315,8 @@ void DefineBvhIntersect(EmitterState& state) {
 		                   : LoadDword(state, page1, (index - 16u) * 4u);
 	};
 	std::array<uint32_t, 4>                child32 {};
-	std::array<std::array<uint32_t, 3>, 4> min32 {};
-	std::array<std::array<uint32_t, 3>, 4> max32 {};
+	std::array<Vec3, 4> min32 {};
+	std::array<Vec3, 4> max32 {};
 	for (uint32_t slot = 0; slot < 4u; slot++) {
 		child32[slot]    = dword32(slot);
 		const auto first = 4u + slot * 6u;
@@ -308,8 +353,8 @@ void DefineBvhIntersect(EmitterState& state) {
 		    state, Op2(state, OpShiftRightLogical, u32, word, ConstantU32(state, 16)));
 	};
 	std::array<uint32_t, 4>                child16 {};
-	std::array<std::array<uint32_t, 3>, 4> min16 {};
-	std::array<std::array<uint32_t, 3>, 4> max16 {};
+	std::array<Vec3, 4> min16 {};
+	std::array<Vec3, 4> max16 {};
 	for (uint32_t slot = 0; slot < 4u; slot++) {
 		child16[slot]    = dword16(slot);
 		const auto first = 4u + slot * 3u;
@@ -325,12 +370,119 @@ void DefineBvhIntersect(EmitterState& state) {
 	state.builder.AddFunction({OpBranch, inner_merge});
 
 	EmitLabel(state, other_label);
+	// Kinds 0-3 are all triangle nodes, and the kind is also the index of the triangle
+	// within the fan.
+	const auto is_triangle =
+	    Op2(state, OpUGreaterThan, bool_type, ConstantU32(state, NodeKindBoxFp16), kind);
+	const auto tri_label  = state.builder.AllocateId();
+	const auto none_label = state.builder.AllocateId();
+	const auto tri_merge  = state.builder.AllocateId();
+	const auto tri_exit   = state.builder.AllocateId();
+	state.builder.AddFunction({OpSelectionMerge, tri_merge, SelectionControlNone});
+	state.builder.AddFunction({OpBranchConditional, is_triangle, tri_label, none_label});
+
+	EmitLabel(state, tri_label);
+	const auto tri_page = ResolvePage(state, node_address);
+	const auto tri_mapped =
+	    Op2(state, OpINotEqual, bool_type, tri_page, zero_address);
+	const auto tri_dword = [&](uint32_t index) { return LoadDword(state, tri_page, index * 4u); };
+	std::array<Vec3, 5> vertex {};
+	for (uint32_t index = 0; index < 5u; index++) {
+		for (uint32_t axis = 0; axis < 3u; axis++) {
+			vertex[index][axis] = Op1(state, OpBitcast, f32, tri_dword(index * 3u + axis));
+		}
+	}
+	// Five vertices encode four triangles as a fan centred on v2:
+	// (v0,v1,v2) (v1,v3,v2) (v2,v3,v4) (v2,v4,v0). This is the PS5 delta - stock RDNA2
+	// packs only two triangles into four vertices.
+	const auto v0 = SelectVertexByKind(state, kind, vertex[0], vertex[1], vertex[2], vertex[2]);
+	const auto v1 = SelectVertexByKind(state, kind, vertex[1], vertex[3], vertex[3], vertex[4]);
+	const auto v2 = SelectVertexByKind(state, kind, vertex[2], vertex[2], vertex[4], vertex[0]);
+
+	const auto e1 = Subtract(state, v1, v0);
+	const auto e2 = Subtract(state, v2, v0);
+	const auto e3 = Subtract(state, ray.origin, v0);
+	const auto s1 = Cross(state, ray.direction, e2);
+	const auto s2 = Cross(state, e3, e1);
+	const auto t_num   = Dot(state, e2, s2);
+	const auto t_denom = Dot(state, s1, e1);
+	const auto i_num   = Dot(state, e3, s1);
+	const auto j_num   = Dot(state, ray.direction, s2);
+
+	const auto zero_f = ConstantF32(state, 0x00000000u);
+	const auto one_f  = ConstantF32(state, 0x3f800000u);
+	const auto t = Op2(state, OpFDiv, f32, t_num, t_denom);
+	const auto u = Op2(state, OpFDiv, f32, i_num, t_denom);
+	const auto v = Op2(state, OpFDiv, f32, j_num, t_denom);
+	auto missed = Op2(state, OpLogicalOr, bool_type,
+	                  Op2(state, OpFOrdLessThan, bool_type, u, zero_f),
+	                  Op2(state, OpFOrdGreaterThan, bool_type, u, one_f));
+	missed = Op2(state, OpLogicalOr, bool_type, missed,
+	             Op2(state, OpFOrdLessThan, bool_type, v, zero_f));
+	missed = Op2(state, OpLogicalOr, bool_type, missed,
+	             Op2(state, OpFOrdGreaterThan, bool_type,
+	                 Op2(state, OpFAdd, f32, u, v), one_f));
+	missed = Op2(state, OpLogicalOr, bool_type, missed,
+	             Op2(state, OpFOrdLessThan, bool_type, t, zero_f));
+	missed = Op2(state, OpLogicalOr, bool_type, missed,
+	             Op1(state, OpLogicalNot, bool_type, tri_mapped));
+	// A miss is encoded in the numerator, not a separate flag.
+	const auto infinity  = ConstantF32(state, 0x7f800000u);
+	const auto out_t_num = Op3(state, OpSelect, f32, missed, infinity, t_num);
+	const auto out_denom = Op3(state, OpSelect, f32, missed, one_f, t_denom);
+
+	// Barycentric mode is descriptor bit 120, and is what the platform compiler emits by
+	// default. The node's last dword then holds one byte per triangle: bits 0-1 select which
+	// barycentric is reported first, bits 2-3 which is reported second. This undoes the vertex
+	// rotation the builder applied so the pair matches the caller's own mesh winding.
+	const auto id_word = tri_dword(15);
+	const auto shift   = Op2(state, OpShiftLeftLogical, u32, kind, ConstantU32(state, 3));
+	const auto mapping = Op2(state, OpShiftRightLogical, u32, id_word, shift);
+	const auto pick    = [&](uint32_t offset) {
+		const auto index = Op2(state, OpBitwiseAnd, u32,
+		                       Op2(state, OpShiftRightLogical, u32, mapping,
+		                           ConstantU32(state, offset)),
+		                       ConstantU32(state, 3));
+		const auto b0 = Op2(state, OpFSub, f32, Op2(state, OpFSub, f32, out_denom, i_num), j_num);
+		const auto is0 = Op2(state, OpIEqual, bool_type, index, ConstantU32(state, 0));
+		const auto is1 = Op2(state, OpIEqual, bool_type, index, ConstantU32(state, 1));
+		const auto rest = Op3(state, OpSelect, f32, is1, i_num, j_num);
+		return Op3(state, OpSelect, f32, is0, b0, rest);
+	};
+	const auto barycentric_mode =
+	    Op2(state, OpINotEqual, bool_type,
+	        Op2(state, OpBitwiseAnd, u32, scalar[3], ConstantU32(state, 1u << 24u)),
+	        ConstantU32(state, 0));
+	// Triangle-ID mode instead reports the node's stored id plus the triangle index, and an
+	// explicit hit flag.
+	const auto triangle_id = Op2(state, OpIAdd, u32, id_word, kind);
+	const auto hit_flag    = Op3(state, OpSelect, u32, missed, ConstantU32(state, 0),
+	                             ConstantU32(state, 1));
+	const auto third  = Op3(state, OpSelect, u32, barycentric_mode,
+	                        Op1(state, OpBitcast, u32, pick(0)), triangle_id);
+	const auto fourth = Op3(state, OpSelect, u32, barycentric_mode,
+	                        Op1(state, OpBitcast, u32, pick(2)), hit_flag);
+	const auto tri_result = state.builder.AllocateId();
+	state.builder.AddFunction({OpCompositeConstruct, result_type, tri_result,
+	                           Op1(state, OpBitcast, u32, out_t_num),
+	                           Op1(state, OpBitcast, u32, out_denom), third, fourth});
+	state.builder.AddFunction({OpBranch, tri_exit});
+	EmitLabel(state, tri_exit);
+	state.builder.AddFunction({OpBranch, tri_merge});
+
+	EmitLabel(state, none_label);
+	state.builder.AddFunction({OpBranch, tri_merge});
+
+	EmitLabel(state, tri_merge);
+	const auto tri_phi = state.builder.AllocateId();
+	state.builder.AddFunction({OpPhi, result_type, tri_phi, tri_result, tri_exit, all_missed,
+	                           none_label});
 	state.builder.AddFunction({OpBranch, inner_merge});
 
 	EmitLabel(state, inner_merge);
 	const auto inner_result = state.builder.AllocateId();
 	state.builder.AddFunction({OpPhi, result_type, inner_result, box16_result, box16_exit,
-	                           all_missed, other_label});
+	                           tri_phi, tri_merge});
 	state.builder.AddFunction({OpBranch, merge_label});
 
 	EmitLabel(state, merge_label);
