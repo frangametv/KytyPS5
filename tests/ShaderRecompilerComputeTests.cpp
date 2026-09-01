@@ -23698,6 +23698,61 @@ TestCase DispatcherIrreducibleControlFlow() {
   return test;
 }
 
+// raytracing: execute one fp32 box-node intersection against a hand-built BVH whose answer
+// is arithmetically obvious. Four unit boxes sit along +Z at z = 40, 30, 20, 10 in slot order,
+// so a ray down +Z from the origin hits all four and the distance sort must return them
+// exactly reversed. Node lives at guest 0x10000; the descriptor holds that base in 256-byte
+// units with box sorting enabled.
+TestCase BvhIntersectRayBoxNodeSorted() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  static constexpr u32 kNode[32] = {
+      0x00000055u, 0x0000005du, 0x00000065u, 0x0000006du, 0xbf800000u, 0xbf800000u,
+      0x42200000u, 0x3f800000u, 0x3f800000u, 0x42240000u, 0xbf800000u, 0xbf800000u,
+      0x41f00000u, 0x3f800000u, 0x3f800000u, 0x41f80000u, 0xbf800000u, 0xbf800000u,
+      0x41a00000u, 0x3f800000u, 0x3f800000u, 0x41a80000u, 0xbf800000u, 0xbf800000u,
+      0x41200000u, 0x3f800000u, 0x3f800000u, 0x41300000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u};
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 5u);
+  AppendVMovLiteral(&code, 1, 0x7149f2cau);
+  AppendVMovU32(&code, 2, 0);
+  AppendVMovU32(&code, 3, 0);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovU32(&code, 5, 0);
+  AppendVMovU32(&code, 6, 0);
+  AppendVMovLiteral(&code, 7, 0x3f800000u);
+  AppendVMovLiteral(&code, 8, 0x7f800000u);
+  AppendVMovLiteral(&code, 9, 0x7f800000u);
+  AppendVMovLiteral(&code, 10, 0x3f800000u);
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  for (u32 dword = 0; dword < 4u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 32u, 0u);
+  std::copy(std::begin(kNode), std::end(kNode),
+            memory.begin() + kNodeByteOffset / sizeof(u32));
+
+  TestCase test;
+  test.name = "BvhIntersectRayBoxNodeSorted";
+  test.code = code;
+  test.initial = std::move(memory);
+  test.expected = {0x0000006du, 0x00000065u, 0x0000005du, 0x00000055u};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0x80000000u;
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+
 std::vector<TestCase> MakeCases() {
   std::vector<TestCase> cases;
   cases.reserve(128);
@@ -23913,6 +23968,7 @@ std::vector<TestCase> MakeCases() {
   AddCase(TBufferStoreFormatXy88IntegerComponents);
   AddCase(TBufferLoadFormatXy88IntegerComponents);
   AddCase(TBufferStoreVariants);
+  AddCase(BvhIntersectRayBoxNodeSorted); // raytracing:
   AddCase(FlatLoadVariants);
   AddCase(FlatSubdwordLoadsApplyByteOffset);
   AddCase(FlatVirtualAddressRebasesGuestAllocation);
@@ -28248,6 +28304,12 @@ int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--position-w-only") == 0) {
     VulkanHarness vulkan;
     RunGraphicsCase(&vulkan, GraphicsPositionWExport());
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--bvh-exec-only") == 0) { // raytracing:
+    VulkanHarness vulkan;
+    RunCase(&vulkan, BvhIntersectRayBoxNodeSorted());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayBoxNodeSorted");
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--bvh-decode-only") == 0) { // raytracing:
