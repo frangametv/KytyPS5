@@ -24130,6 +24130,67 @@ TestCase BvhIntersectRayBoxNodeNanAxis() {
 }
 // raytracing: end
 
+// raytracing: begin - box growing. A ray through the unit box's corner region enters the x
+// slab at t = 1 and leaves the y slab at t = 1 - 2^-23, so the interval is empty by one ulp
+// and the descriptor with no allowance misses. The second descriptor grows the far bound by
+// 4 ulps, (1 - 2^-23)(1 + 2^-22) rounds to 1 + 2^-23, and the same node is hit. Both
+// descriptors read the same node in one dispatch, so the run is its own control.
+TestCase BvhIntersectRayBoxNodeGrown() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  static constexpr u32 kNode[32] = {
+      0x00000055u, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x3f800000u, 0x3f800000u, 0x3f800000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u};
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 5u);
+  AppendVMovLiteral(&code, 1, 0x41200000u);
+  AppendVMovLiteral(&code, 2, 0xbf800000u);  // origin (-1, 2^-23, 0.5)
+  AppendVMovLiteral(&code, 3, 0x34000000u);
+  AppendVMovLiteral(&code, 4, 0x3f000000u);
+  AppendVMovLiteral(&code, 5, 0x3f800000u);  // direction (1, 1, 0)
+  AppendVMovLiteral(&code, 6, 0x3f800000u);
+  AppendVMovU32(&code, 7, 0);
+  AppendVMovLiteral(&code, 8, 0x3f800000u);  // inverse (1, 1, +inf)
+  AppendVMovLiteral(&code, 9, 0x3f800000u);
+  AppendVMovLiteral(&code, 10, 0x7f800000u);
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(20u, 0u, 1u));
+  for (u32 dword = 0; dword < 8u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 32u, 0u);
+  std::copy(std::begin(kNode), std::end(kNode),
+            memory.begin() + kNodeByteOffset / sizeof(u32));
+
+  TestCase test;
+  test.name = "BvhIntersectRayBoxNodeGrown";
+  test.code = code;
+  test.initial = std::move(memory);
+  test.expected = {0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu,
+                   0x00000055u, 0xffffffffu, 0xffffffffu, 0xffffffffu};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0u;  // no growth
+  test.user_data[4] = kGuestBase >> 8u;
+  test.user_data[5] = 4u << 23u;  // grow the far bound by 4 ulps
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
 // raytracing: begin - the same triangle hit, in triangle-ID return mode rather than
 // barycentric. The distance is still reported as a numerator over a denominator, but the last
 // two dwords become the node's stored id plus the index of the triangle within the fan, and an
@@ -24457,6 +24518,7 @@ std::vector<TestCase> MakeCases() {
   AddCase(BvhIntersectRayBvh64BoxNode);
   AddCase(BvhIntersectRayBoxNodeUnsorted);
   AddCase(BvhIntersectRayBoxNodeNanAxis);
+  AddCase(BvhIntersectRayBoxNodeGrown);
   AddCase(BvhIntersectRayTriangleIdMode);
   AddCase(BvhIntersectRayUserNodeMisses);
   // raytracing: end
@@ -28817,6 +28879,8 @@ int main(int argc, char **argv) {
     std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayBoxNodeUnsorted");
     RunCase(&vulkan, BvhIntersectRayBoxNodeNanAxis());
     std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayBoxNodeNanAxis");
+    RunCase(&vulkan, BvhIntersectRayBoxNodeGrown());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayBoxNodeGrown");
     RunCase(&vulkan, BvhIntersectRayTriangleIdMode());
     std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayTriangleIdMode");
     RunCase(&vulkan, BvhIntersectRayUserNodeMisses());
