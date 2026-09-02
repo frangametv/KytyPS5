@@ -622,7 +622,7 @@ private:
 		} else {
 			// The address is derived from guest data, so it can be anything; a descriptor that
 			// does not resolve must fail evaluation rather than fault the emulator.
-			if (!HostMemoryRangeIsReadable(address, sizeof(word))) {
+			if (!RangeReadable(address, sizeof(word))) {
 				return false;
 			}
 			std::memcpy(&word, reinterpret_cast<const void*>(address), sizeof(word));
@@ -962,6 +962,22 @@ private:
 		return false;
 	}
 
+	// One host memory query per region instead of one per word; the same check, cached for this walk.
+	bool RangeReadable(uint64_t address, uint64_t size) {
+		for (const auto& [begin, end]: m_readable_regions) {
+			if (address >= begin && size <= end - address) {
+				return true;
+			}
+		}
+		uint64_t begin = 0;
+		uint64_t end   = 0;
+		if (HostMemoryReadableRegion(address, begin, end) && size <= end - address) {
+			m_readable_regions.emplace_back(begin, end);
+			return true;
+		}
+		return HostMemoryRangeIsReadable(address, size);
+	}
+
 	const ResourcePlan&                       m_program;
 	const SrtRuntime&                         m_runtime;
 	std::span<const uint8_t>                  m_clean_flat_slots;
@@ -969,6 +985,7 @@ private:
 	Value                                     m_active_mask;
 	std::unordered_map<const Inst*, uint64_t> m_cache;
 	std::vector<const Inst*>                  m_visiting;
+	std::vector<std::pair<uint64_t, uint64_t>> m_readable_regions;
 	bool                                      m_reserved = false;
 };
 
