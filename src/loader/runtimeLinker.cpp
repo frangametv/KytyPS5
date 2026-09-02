@@ -1985,7 +1985,8 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 	program->mapped_size = program->base_size_aligned + tls_handler_size;
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-	const bool         use_red_zone_protection  = Config::RedZoneProtectionEnabled();
+	// Trap sites are always relocated on Windows; --redzone extends the patching to memory instructions.
+	const bool         use_red_zone_protection  = true;
 	constexpr uint64_t RED_ZONE_TRAMPOLINE_SIZE = 8u * 1024u * 1024u;
 	if (use_red_zone_protection) {
 		EXIT_IF(RED_ZONE_TRAMPOLINE_SIZE > UINT64_MAX - program->mapped_size);
@@ -2116,15 +2117,15 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 			     Common::PathToString(program->file_name).c_str());
 		}
 		for (const auto& [segment_addr, segment_size]: executable_segments) {
-			const auto result =
-			    PatchRedZoneMemoryInstructions(segment_addr, segment_size, function_starts);
+			const auto result = PatchRedZoneMemoryInstructions(segment_addr, segment_size, function_starts,
+			                                                   Config::RedZoneProtectionEnabled());
 			LOGF("Windows guest red-zone patching: %s, functions=%" PRIu64 ", red_zone=%" PRIu64
-			     ", memory=%" PRIu64 ", patched=%" PRIu64 ", short=%" PRIu64 ", stack=%" PRIu64
-			     ", control=%" PRIu64 ", unrelocatable=%" PRIu64 "\n",
+			     ", memory=%" PRIu64 ", trapping=%" PRIu64 ", patched=%" PRIu64 ", short=%" PRIu64
+			     ", stack=%" PRIu64 ", control=%" PRIu64 ", unrelocatable=%" PRIu64 "\n",
 			     Common::PathToString(program->file_name.filename()).c_str(), result.function_count,
 			     result.red_zone_function_count, result.memory_instruction_count,
-			     result.patched_memory_instruction_count, result.short_memory_instruction_count,
-			     result.stack_dependent_memory_instruction_count,
+			     result.trapping_instruction_count, result.patched_memory_instruction_count,
+			     result.short_memory_instruction_count, result.stack_dependent_memory_instruction_count,
 			     result.control_flow_memory_instruction_count,
 			     result.unrelocatable_memory_instruction_count);
 			Common::VirtualMemory::FlushInstructionCache(segment_addr, segment_size);
