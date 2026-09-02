@@ -549,7 +549,6 @@ static bool TryEmulateSse4a(PCONTEXT context) {
 		}
 
 		dst->Low  = ExtractBitField(dst->Low, length, index);
-		dst->High = 0;
 		context->Rip += insn_length;
 		return true;
 	}
@@ -699,11 +698,6 @@ static void SetXmmLow(uint32_t* xmm, uint64_t value) {
 	xmm[1] = static_cast<uint32_t>(value >> 32u);
 }
 
-static void SetXmmHigh(uint32_t* xmm, uint64_t value) {
-	xmm[2] = static_cast<uint32_t>(value);
-	xmm[3] = static_cast<uint32_t>(value >> 32u);
-}
-
 static bool TryEmulateSse4a(ucontext_t* context) {
 	if (context == nullptr) {
 		return false;
@@ -758,7 +752,6 @@ static bool TryEmulateSse4a(ucontext_t* context) {
 		}
 
 		SetXmmLow(dst, ExtractBitField(GetXmmLow(dst), length, index));
-		SetXmmHigh(dst, 0);
 		rip_reg += static_cast<greg_t>(insn_length);
 		return true;
 	}
