@@ -535,12 +535,12 @@ static bool TryEmulateSse4a(PCONTEXT context) {
 	// AMD SSE4a immediate-form EXTRQ/INSERTQ. PS5 code can execute these natively on AMD hardware,
 	// while Intel hosts raise an illegal-instruction exception.
 	if (prefix == 0x66) {
-		auto* dst = GetContextXmm(context, rm);
+		auto* dst = GetContextXmm(context, register_form ? reg : rm);
 		if (dst == nullptr) {
 			return false;
 		}
 		if (register_form) {
-			const auto* field = GetContextXmm(context, reg);
+			const auto* field = GetContextXmm(context, rm);
 			if (field == nullptr) {
 				return false;
 			}
@@ -744,12 +744,12 @@ static bool TryEmulateSse4a(ucontext_t* context) {
 
 	// AMD SSE4a immediate-form EXTRQ/INSERTQ.
 	if (prefix == 0x66) {
-		auto* dst = GetContextXmm(context, rm);
+		auto* dst = GetContextXmm(context, register_form ? reg : rm);
 		if (dst == nullptr) {
 			return false;
 		}
 		if (register_form) {
-			const auto* field = GetContextXmm(context, reg);
+			const auto* field = GetContextXmm(context, rm);
 			if (field == nullptr) {
 				return false;
 			}
