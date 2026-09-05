@@ -1144,7 +1144,8 @@ static void PatchProgram(Program* program, uint64_t address, uint64_t size) {
 		}
 	}
 
-	if (!program->elf->IsShared() && program->tls.handler_vaddr != 0) {
+	if (!program->elf->IsShared() && program->tls.handler_vaddr != 0 &&
+	    size >= Jit::Call9::GetSize()) {
 		// Replace:
 		//   66 66 66
 		//   mov <reg>, qword ptr fs:[0x00]
@@ -1152,7 +1153,8 @@ static void PatchProgram(Program* program, uint64_t address, uint64_t size) {
 		//   call <handler>
 		//   mov <reg>,rax
 		//   nop ...
-		const uint8_t tls_pattern[5] = {0x64, 0x48, 0x8B, 0x00, 0x25};
+		const uint8_t tls_pattern[5]       = {0x64, 0x48, 0x8B, 0x00, 0x25};
+		const uint8_t zero_displacement[4] = {};
 
 		EXIT_IF(Jit::Call9::GetSize() != 9);
 
@@ -1184,12 +1186,15 @@ static void PatchProgram(Program* program, uint64_t address, uint64_t size) {
 			if (instruction.length == inst_size && inst_ptr + Jit::Call9::GetSize() <= end_ptr &&
 			    memcmp(inst_ptr, tls_pattern, 3) == 0 && (modrm & 0xc7u) == 0x04u &&
 			    inst_ptr[4] == tls_pattern[4] &&
-			    *reinterpret_cast<const uint32_t*>(inst_ptr + 5) == 0) {
+			    memcmp(inst_ptr + 5, zero_displacement, sizeof(zero_displacement)) == 0) {
 				LOGF("Patch tls at addr: [%016" PRIx64 "]\n", reinterpret_cast<uint64_t>(ptr));
 
 				const auto reg = (modrm >> 3u) & 7u;
 				EXIT_NOT_IMPLEMENTED(reg == 4u);
 
+				// Decoding guarantees ptr is the instruction boundary, so replacing from ptr
+				// also removes genuine 0x66 prefixes. Call9 starts with REX.W as an extra
+				// safeguard against AMD interpreting a retained prefix as callw.
 				auto* code = new (ptr) Jit::Call9;
 				code->SetFunc(reg == 0
 				                  ? program->tls.handler_vaddr

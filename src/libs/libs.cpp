@@ -72,6 +72,7 @@ LIB_DEFINE(InitVideoOut_1);
 
 LIB_DEFINE(InitAppContent_1);
 LIB_DEFINE(InitAudio_1);
+LIB_DEFINE(InitConvertKeycode_1);
 LIB_DEFINE(InitDbgAddressSanitizer_1);
 LIB_DEFINE(InitDialog_1);
 LIB_DEFINE(InitFont_1);
@@ -90,9 +91,11 @@ LIB_DEFINE(InitSysmodule_1);
 LIB_DEFINE(InitSystemService_1);
 LIB_DEFINE(InitTextToSpeech2_1);
 LIB_DEFINE(InitUserService_1);
+LIB_DEFINE(InitWebBrowserDialog_1);
 
 void InitAll(Loader::SymbolDatabase* s) {
 	InitAudio_1(s);
+	InitConvertKeycode_1(s);
 	LibAmpr::InitAmpr_1(s);
 	InitAppContent_1(s);
 	Coredump::InitCoredump_1(s);
@@ -128,6 +131,7 @@ void InitAll(Loader::SymbolDatabase* s) {
 	InitUserService_1(s);
 	VideoDec2::InitVideoDec2_1(s);
 	LibGen5::InitVideoOut_1(s);
+	InitWebBrowserDialog_1(s);
 }
 
 namespace LibContentExport {
