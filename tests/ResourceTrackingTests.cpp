@@ -1171,6 +1171,54 @@ void TestDynamicScalarDescriptorTupleUsesDma() {
         "dynamic scalar descriptor tuple was not lowered to DMA");
 }
 
+void TestGtaVDynamicBufferStoreFallbackIsScoped() {
+  const auto AddDynamicStore = [](Fixture &fixture) {
+    const auto table = fixture.Buffer(
+        {fixture.UserData(0), fixture.UserData(1), Value(16u), Value(0u)},
+        0x850);
+    MemoryInfo scalar;
+    scalar.kind = ResourceKind::ScalarBuffer;
+    const auto descriptor_word = fixture.Emit(
+        ValueOpcode::ReadConstBuffer,
+        {table, fixture.Emit(ValueOpcode::UndefU32)},
+        fixture.AddMemory(scalar, 0x858));
+    const auto dynamic = fixture.Buffer(
+        {descriptor_word, Value(0u), Value(0u), Value(0u)}, 0x864);
+    MemoryInfo storage;
+    storage.kind = ResourceKind::Buffer;
+    return fixture.Emit(
+        ValueOpcode::StoreBufferU32,
+        {dynamic, Value(0u), Value(0u), Value(0u), Value(0x12345678u),
+         Value(true)},
+        fixture.AddMemory(storage, 0x86c));
+  };
+
+  Fixture gta;
+  gta.program.shader_hash = 0x6a53456e7ef5d1b0ull;
+  const auto store = AddDynamicStore(gta);
+  gta.PlanAndTrack();
+  const auto *store_inst = store.ResolveInstruction();
+  const auto *handle = store_inst->Arg(0).ResolveInstruction();
+  bool null_handle = handle != nullptr && handle->NumArgs() == 4u;
+  for (uint32_t dword = 0; null_handle && dword < handle->NumArgs(); dword++) {
+    const auto value = handle->Arg(dword).Resolve();
+    null_handle = value.IsImmediate() && value.GetType() == Type::U32 &&
+                  value.U32() == 0u;
+  }
+  Check(store_inst->Arg(5).Resolve().IsImmediate() &&
+            !store_inst->Arg(5).Resolve().U1() && null_handle &&
+            gta.program.info.buffers.size() == 2u,
+        "GTA V dynamic buffer store was not safely disabled");
+
+  Fixture unrelated;
+  unrelated.program.shader_hash = 0x6a53456e7ef5d1b1ull;
+  AddDynamicStore(unrelated);
+  BuildSrtPlan(unrelated.program);
+  CheckFatal([&] { TrackResources(unrelated.program); },
+             "rooted at ReadConstBuffer",
+             "dynamic buffer workaround escaped the GTA V shader allowlist");
+}
+
 void TestDmaAddressMaterialization() {
   Fixture fixture;
   const auto based =
@@ -1594,6 +1642,8 @@ int main() {
     Run("invariant loop phi", TestInvariantLoopPhi);
     Run("dynamic scalar buffer DMA", TestDynamicScalarBufferUsesDma);
     Run("dynamic scalar descriptor tuple DMA", TestDynamicScalarDescriptorTupleUsesDma);
+    Run("GTA V dynamic buffer store fallback",
+        TestGtaVDynamicBufferStoreFallbackIsScoped);
     Run("DMA address materialization", TestDmaAddressMaterialization);
     Run("dynamic FLAT address", TestDynamicFlatAddressesUseDma);
     Run("buffer swizzle specialization", TestBufferSwizzleSpecialization);
