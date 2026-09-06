@@ -16,7 +16,7 @@ Rectangle {
         anchors.margins: 18
         spacing: 24
         Label {
-            text: row.field.label
+            text: qsTranslate("Library", row.field.label)
             color: "#F7F8FB"
             font.pixelSize: 14
             Layout.fillWidth: true
@@ -34,7 +34,7 @@ Rectangle {
         Switch {
             checked: Boolean(row.currentValue)
             onToggled: row.edited(checked)
-            Accessible.name: row.field.label
+            Accessible.name: qsTranslate("Library", row.field.label)
             indicator: Rectangle {
                 width: 44; height: 24; radius: 12
                 y: (parent.height - height) / 2
@@ -55,7 +55,7 @@ Rectangle {
             currentIndex: row.field.kind === "choiceIndex" ? Number(row.currentValue) :
                           Math.max(0, row.field.choices.indexOf(String(row.currentValue)))
             onActivated: row.edited(row.field.kind === "choiceIndex" ? currentIndex : currentText)
-            Accessible.name: row.field.label
+            Accessible.name: qsTranslate("Library", row.field.label)
             palette.button: "#242424"
             palette.buttonText: "#F7F8FB"
             palette.base: "#242424"
@@ -73,7 +73,7 @@ Rectangle {
             selectByMouse: true
             font.pixelSize: 13
             onTextEdited: row.edited(text)
-            Accessible.name: row.field.label
+            Accessible.name: qsTranslate("Library", row.field.label)
             background: Rectangle {
                 radius: 8; color: "#242424"
                 border.color: parent.activeFocus ? "#B87950" : "#353535"

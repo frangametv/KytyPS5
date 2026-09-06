@@ -665,6 +665,9 @@ endif()
 install(TARGETS kyty_emulator DESTINATION .)
 if(KYTY_BUILD_LAUNCHER)
 	add_subdirectory("${KYTY_SOURCE_DIR}/kytylibrary" "${CMAKE_CURRENT_BINARY_DIR}/kytylibrary")
+	# Define the public build target here so Ninja does not place its phony
+	# output at kytylibrary/kyty_library, the Linux launcher executable path.
+	add_custom_target(kyty_library DEPENDS launcher)
 endif()
 if(KYTY_CLANG_CL)
 	install(FILES "${KYTY_THIRD_PARTY_DIR}/winpthread/bin/libwinpthread-1.dll" DESTINATION .)

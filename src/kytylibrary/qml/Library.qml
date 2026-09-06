@@ -12,7 +12,9 @@ Rectangle {
     property bool consoleOpen: false
     property real consoleHeight: 240
     property bool listMode: false
-    readonly property bool compact: height < 850 && consoleOpen
+    readonly property bool compact: height < 760
+    readonly property real gameContentHeight: rail.visible ? rail.implicitHeight + 28 + detailsContent.implicitHeight + 50 + 48 : 180
+    readonly property real consoleMaximumHeight: Math.max(80, contentLayout.height - navigation.height - footer.implicitHeight - 54 - (root.options ? 240 : gameContentHeight))
     property string query: ""
     property var filteredGames: library.games.filter(game => (game.name + " " + game.titleId).toLowerCase().indexOf(query.toLowerCase()) >= 0)
     onFilteredGamesChanged: {
@@ -88,21 +90,25 @@ Rectangle {
                 onDoubleClicked: windowChrome.toggleMaximized()
             }
             RowLayout {
-                anchors.fill: parent; anchors.leftMargin: 24; spacing: 12
+                anchors.fill: parent; anchors.leftMargin: 16; spacing: 12
                 Rectangle {
                     implicitWidth: 22; implicitHeight: 22; radius: 8; color: "#B87950"
                     Text { anchors.centerIn: parent; text: "K"; font.bold: true; color: "#1C1510"; font.pixelSize: 14 }
                 }
                 Label { text: "KytyPS5"; color: "#F7F8FB"; font.weight: Font.DemiBold; font.pixelSize: 14 }
-                Label { text: "LIBRARY"; color: "#777F8E"; font.pixelSize: 10; font.letterSpacing: 1.5 }
+                Label { text: qsTr("LIBRARY"); color: "#777F8E"; font.pixelSize: 12; font.letterSpacing: 1.2 }
                 Rectangle {
                     implicitWidth: buildLabel.implicitWidth + 20; implicitHeight: 28
                     radius: 8; color: "#30271F"; border.color: "#B87950"
-                    Label { id: buildLabel; anchors.centerIn: parent; text: library.version; color: "#D3A07A"; font.pixelSize: 11 }
+                    Row {
+                        id: buildLabel; anchors.centerIn: parent; spacing: 5
+                        Label { text: library.version.split(":")[0]; color: "#D3A07A"; font.pixelSize: 13; font.bold: true }
+                        Label { anchors.verticalCenter: parent.verticalCenter; text: library.version.split(":").slice(1).join(":").trim(); color: "#D3A07A"; font.pixelSize: 10 }
+                    }
                 }
                 Item { Layout.fillWidth: true }
                 Rectangle { implicitWidth: 6; implicitHeight: 6; radius: 3; color: library.running ? "#66F2A3" : "#777F8E" }
-                Label { text: library.status; color: "#A7A7AF"; font.pixelSize: 12; elide: Text.ElideRight; Layout.maximumWidth: root.width * 0.3 }
+                Label { text: qsTranslate("Library", library.status); color: "#A7A7AF"; font.pixelSize: 12; elide: Text.ElideRight; Layout.maximumWidth: root.width * 0.3 }
                 Row {
                     Layout.leftMargin: 10
                     WindowButton {
@@ -125,24 +131,26 @@ Rectangle {
             }
         }
         ColumnLayout {
+            id: contentLayout
             Layout.fillWidth: true; Layout.fillHeight: true
             Layout.leftMargin: 32; Layout.rightMargin: 32; Layout.topMargin: 22; Layout.bottomMargin: 16
             spacing: 18
             RowLayout {
+                id: navigation
                 Layout.fillWidth: true; spacing: 12
                 LibraryButton {
-                    text: "Library"; outlined: true; font.pixelSize: 20
+                    text: qsTr("Library"); glyph: "disc"; outlined: !root.options; font.pixelSize: 18
                     opacity: root.options ? 0.75 : 1
                     onClicked: root.showLibrary()
                 }
                 LibraryButton {
-                    text: "Options"; outlined: true; font.pixelSize: 20
+                    text: qsTr("Options"); glyph: "gear"; outlined: root.options; font.pixelSize: 18
                     opacity: root.options ? 1 : 0.75
                     onClicked: root.showOptions(true)
                 }
                 Item { Layout.fillWidth: true }
                 LibraryButton {
-                    visible: !root.options; text: root.listMode ? "Covers" : "List"
+                    visible: !root.options; text: root.listMode ? qsTr("Covers") : qsTr("List")
                     glyph: root.listMode ? "grid" : "list"
                     onClicked: root.listMode = !root.listMode
                 }
@@ -150,15 +158,15 @@ Rectangle {
                     id: search
                     visible: !root.options
                     Layout.preferredWidth: 230; implicitHeight: 38
-                    placeholderText: "Search games…"
+                    placeholderText: qsTr("Search games…")
                     color: "#F7F8FB"; placeholderTextColor: "#777F8E"
                     selectByMouse: true; font.pixelSize: 13
-                    Accessible.name: "Search games"
+                    Accessible.name: qsTr("Search games")
                     onTextChanged: root.query = text
                     background: Rectangle { radius: 8; color: "#B0161616"; border.color: parent.activeFocus ? "#B87950" : "#303030" }
                 }
                 LibraryButton {
-                    visible: !root.options; text: "+ Add folder"; enabled: !library.running && !library.scanning
+                    visible: !root.options; text: qsTr("+ Add folder"); enabled: !library.running && !library.scanning
                     onClicked: library.addFolder()
                 }
             }
@@ -170,9 +178,13 @@ Rectangle {
                     anchors.fill: parent; visible: !root.options; spacing: 16
                     ListView {
                         id: rail
+                        objectName: "gameRail"
                         Layout.fillWidth: true
-                        Layout.preferredHeight: root.listMode ? (root.compact ? 100 : Math.min(260, root.height * 0.32)) : (root.compact ? 114 : 194)
-                        Layout.topMargin: root.consoleOpen ? 0 : 28
+                        implicitHeight: root.listMode ? Math.min(Math.max(0, root.filteredGames.length * 72 - 6), root.compact ? 138 : 210) : (root.compact ? 114 : 194)
+                        Layout.minimumHeight: implicitHeight
+                        Layout.maximumHeight: implicitHeight
+                        Layout.preferredHeight: implicitHeight
+                        Layout.topMargin: 28
                         visible: root.filteredGames.length > 0
                         orientation: root.listMode ? ListView.Vertical : ListView.Horizontal
                         spacing: root.listMode ? 6 : 16
@@ -235,7 +247,7 @@ Rectangle {
                             Text {
                                 visible: root.listMode
                                 anchors.right: parent.right; anchors.rightMargin: 18; anchors.verticalCenter: parent.verticalCenter
-                                text: tile.modelData.status; color: "#A7A7AF"; font.pixelSize: 12
+                                text: qsTranslate("Library", tile.modelData.status); color: "#A7A7AF"; font.pixelSize: 12
                             }
                             MouseArea {
                                 anchors.fill: parent; acceptedButtons: Qt.LeftButton | Qt.RightButton
@@ -256,7 +268,9 @@ Rectangle {
                     ScrollView {
                         id: gameDetails
                         Layout.fillWidth: true
-                        Layout.preferredHeight: Math.min(detailsContent.implicitHeight, Math.max(40, gameArea.height - rail.height - 100))
+                        Layout.minimumHeight: detailsContent.implicitHeight
+                        Layout.preferredHeight: detailsContent.implicitHeight
+                        Layout.maximumHeight: detailsContent.implicitHeight
                         visible: root.hasGame && root.filteredGames.length > 0
                         contentWidth: availableWidth
                         clip: true
@@ -265,8 +279,9 @@ Rectangle {
                             width: gameDetails.availableWidth; spacing: root.compact ? 8 : 14
                             Rectangle { Layout.preferredWidth: 44; implicitHeight: 3; color: "#B87950"; radius: 1 }
                             Label {
+                                objectName: "gameTitle"
                                 text: root.game.name || ""
-                                font.pixelSize: root.compact ? 26 : root.consoleOpen ? 30 : 42; font.weight: Font.DemiBold
+                                font.pixelSize: root.compact ? 26 : 42; font.weight: Font.DemiBold
                                 color: "#F7F8FB"; wrapMode: Text.WordWrap
                                 maximumLineCount: 2; elide: Text.ElideRight
                                 Layout.fillWidth: true
@@ -275,15 +290,15 @@ Rectangle {
                                 spacing: 10
                                 Repeater {
                                     model: [root.game.titleId || "Unknown title ID",
-                                            root.game.version ? "Version " + root.game.version : "",
-                                            root.game.firmware ? "Firmware " + root.game.firmware : "",
-                                            root.game.status || "Unknown",
+                                            root.game.version ? qsTr("Version %1").arg(root.game.version) : "",
+                                            root.game.firmware ? qsTr("Firmware %1").arg(root.game.firmware) : "",
+                                            root.game.status && root.game.status !== "Unknown" ? root.game.status : "",
                                             root.game.custom ? "Custom settings" : ""].filter(x => x.length > 0)
                                     Rectangle {
                                         required property string modelData
                                         implicitWidth: badge.implicitWidth + 20; implicitHeight: 27
                                         radius: 8; color: "#D0161616"; border.color: "#333333"
-                                        Label { id: badge; anchors.centerIn: parent; text: modelData; color: "#A7A7AF"; font.pixelSize: 11 }
+                                        Label { id: badge; anchors.centerIn: parent; text: qsTranslate("Library", modelData); color: "#A7A7AF"; font.pixelSize: 11 }
                                     }
                                 }
                             }
@@ -303,15 +318,16 @@ Rectangle {
                                 spacing: 12; Layout.topMargin: 4
                                 LibraryButton {
                                     objectName: "startButton"
-                                    text: library.running ? (library.stopping ? "Stopping…" : "Stop") : "Start"
+                                    text: library.running ? (library.stopping ? qsTr("Stopping…") : qsTr("Stop")) : qsTr("Start")
                                     glyph: library.running ? "stop" : "play"
                                     primary: !library.running; danger: library.running
+                                    outlined: library.running
                                     implicitWidth: 154; implicitHeight: 46; font.pixelSize: 15
                                     enabled: library.running ? !library.stopping : library.ready && !library.scanning
                                     onClicked: library.running ? library.stop() : library.start()
                                 }
                                 LibraryButton { text: ""; glyph: "more"; implicitWidth: 46; implicitHeight: 46; onClicked: gameMenu.popup() }
-                                LibraryButton { text: "Console"; glyph: "console"; implicitHeight: 46; onClicked: root.consoleOpen = !root.consoleOpen }
+                                LibraryButton { text: qsTr("Console"); glyph: "console"; outlined: root.consoleOpen; implicitHeight: 46; onClicked: root.consoleOpen = !root.consoleOpen }
                             }
                     Item { visible: root.hasGame; Layout.fillHeight: true }
                     ColumnLayout {
@@ -319,16 +335,16 @@ Rectangle {
                         Layout.fillWidth: true; Layout.fillHeight: true
                         Item { Layout.fillHeight: true }
                         Label {
-                            text: library.scanning ? "Scanning your games…" : library.games.length ? "No matching games" : "Your library starts here"
+                            text: library.scanning ? qsTr("Scanning your games…") : library.games.length ? qsTr("No matching games") : qsTr("Your library starts here")
                             color: "#F7F8FB"; font.pixelSize: 28; font.weight: Font.DemiBold
                             Layout.alignment: Qt.AlignHCenter
                         }
                         Label {
-                            text: library.games.length ? "Try a different title or serial ID." : "Add a folder containing your games to get started."
+                            text: library.games.length ? qsTr("Try a different title or serial ID.") : qsTr("Add a folder containing your games to get started.")
                             color: "#777F8E"; font.pixelSize: 14; Layout.alignment: Qt.AlignHCenter
                         }
                         LibraryButton {
-                            text: "+ Add game folder"; primary: true; visible: !library.games.length
+                            text: qsTr("+ Add game folder"); primary: true; visible: !library.games.length
                             Layout.alignment: Qt.AlignHCenter; Layout.topMargin: 12
                             enabled: !library.running; onClicked: library.addFolder()
                         }
@@ -341,9 +357,9 @@ Rectangle {
                 objectName: "consolePanel"
                 visible: root.consoleOpen
                 Layout.fillWidth: true
-                Layout.minimumHeight: 120
-                Layout.maximumHeight: Math.max(120, root.height - 480)
-                Layout.preferredHeight: Math.min(root.consoleHeight, Math.max(120, root.height - 480))
+                Layout.minimumHeight: 80
+                Layout.maximumHeight: root.consoleMaximumHeight
+                Layout.preferredHeight: Math.min(root.consoleHeight, root.consoleMaximumHeight)
                 color: "#E8111111"; radius: 8; border.color: "#333333"
                 MouseArea {
                     objectName: "consoleResizeHandle"
@@ -359,7 +375,7 @@ Rectangle {
                     onPositionChanged: mouse => {
                         if (pressed) {
                             const delta = initialY - mapToItem(root, mouse.x, mouse.y).y
-                            root.consoleHeight = Math.max(120, Math.min(root.height - 480, initialHeight + delta))
+                            root.consoleHeight = Math.max(80, Math.min(root.consoleMaximumHeight, initialHeight + delta))
                         }
                     }
                     Rectangle {
@@ -372,17 +388,17 @@ Rectangle {
                     anchors.fill: parent; anchors.margins: 12; spacing: 8
                     RowLayout {
                         Layout.fillWidth: true; spacing: 8
-                        Label { text: "Console"; color: "#F7F8FB"; font.pixelSize: 14; font.weight: Font.DemiBold }
+                        Label { text: qsTr("Console"); color: "#F7F8FB"; font.pixelSize: 14; font.weight: Font.DemiBold }
                         TextField {
                             Layout.fillWidth: true; implicitHeight: 32
-                            placeholderText: "Filter logs…"; color: "#F7F8FB"; placeholderTextColor: "#777F8E"
+                            placeholderText: qsTr("Filter logs…"); color: "#F7F8FB"; placeholderTextColor: "#777F8E"
                             onTextChanged: library.filterLog(text)
                             background: Rectangle { color: "#202020"; radius: 8 }
                         }
-                        CheckBox { id: autoScroll; text: "Auto-scroll"; checked: true; palette.windowText: "#A7A7AF" }
-                        LibraryButton { text: "Copy"; implicitHeight: 32; onClicked: library.copyLog() }
-                        LibraryButton { text: "Export"; implicitHeight: 32; onClicked: library.exportLog() }
-                        LibraryButton { text: "Clear"; implicitHeight: 32; onClicked: library.clearLog() }
+                        CheckBox { id: autoScroll; text: qsTr("Auto-scroll"); checked: true; palette.windowText: "#A7A7AF" }
+                        LibraryButton { text: qsTr("Copy"); implicitHeight: 32; onClicked: library.copyLog() }
+                        LibraryButton { text: qsTr("Export"); implicitHeight: 32; onClicked: library.exportLog() }
+                        LibraryButton { text: qsTr("Clear"); implicitHeight: 32; onClicked: library.clearLog() }
                         LibraryButton { text: "×"; implicitHeight: 32; onClicked: root.consoleOpen = false }
                     }
                     ListView {
@@ -403,15 +419,17 @@ Rectangle {
                         }
                         Label {
                             visible: logView.count === 0; anchors.centerIn: parent
-                            text: "Process output will appear here."; color: "#777F8E"
+                            text: qsTr("Process output will appear here."); color: "#777F8E"
                         }
                     }
                 }
             }
             RowLayout {
+                id: footer
                 Layout.fillWidth: true
                 Label {
-                    text: library.games.length + (library.games.length === 1 ? " game" : " games")
+                    Layout.leftMargin: -8
+                    text: library.games.length + (library.games.length === 1 ? qsTr(" game") : qsTr(" games"))
                     color: "#777F8E"; font.pixelSize: 11
                 }
 
@@ -443,8 +461,54 @@ Rectangle {
             onPressed: windowChrome.beginWindowResize(modelData)
         }
     }
+    component GameMenuItem: MenuItem {
+        id: menuEntry
+        implicitWidth: 264
+        implicitHeight: 40
+        leftPadding: 12
+        rightPadding: 12
+        hoverEnabled: true
+        font.pixelSize: 14
+        font.weight: Font.Medium
+        contentItem: Text {
+            text: menuEntry.text
+            font: menuEntry.font
+            color: menuEntry.enabled ? "#FFFFFF" : "#929292"
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+        }
+        background: Rectangle {
+            radius: 8
+            color: menuEntry.down ? "#65432D" : menuEntry.highlighted ? "#493326" : "transparent"
+            border.width: 1
+            border.color: menuEntry.visualFocus ? "#E59455" : "transparent"
+        }
+    }
+    component GameMenuSeparator: MenuSeparator {
+        topPadding: 6
+        bottomPadding: 6
+        leftPadding: 12
+        rightPadding: 12
+        contentItem: Rectangle {
+            implicitWidth: 240
+            implicitHeight: 1
+            color: "#414141"
+        }
+    }
     Menu {
         id: gameMenu
+        popupType: Popup.Item
+        implicitWidth: 280
+        padding: 8
+        spacing: 2
+        margins: 12
+        font.pixelSize: 14
+        background: Rectangle {
+            color: "#202020"
+            radius: 14
+            border.width: 1
+            border.color: "#E59455"
+        }
         palette.window: "#242424"
         palette.base: "#242424"
         palette.text: "#F7F8FB"
@@ -452,31 +516,31 @@ Rectangle {
         palette.buttonText: "#F7F8FB"
         palette.highlight: "#493528"
         palette.highlightedText: "#F7F8FB"
-        MenuItem { text: "Game settings"; enabled: root.hasGame && !library.running; onTriggered: root.showOptions(false) }
-        MenuItem { text: "Open game folder"; onTriggered: library.action("folder") }
-        MenuItem { text: "Copy path"; onTriggered: library.action("copyPath") }
-        MenuItem { text: "Copy title ID"; onTriggered: library.action("copyTitleId") }
-        MenuSeparator {}
-        MenuItem { text: "View trophies"; enabled: library.canViewTrophies; onTriggered: library.action("trophies") }
-        MenuItem { text: "Cheats (experimental)"; visible: library.canPatch; height: visible ? implicitHeight : 0; enabled: !library.running; onTriggered: library.action("patches") }
-        MenuItem { text: "Edit compatibility"; visible: library.localCompatibility; height: visible ? implicitHeight : 0; onTriggered: compatibilityDialog.open() }
-        MenuSeparator {}
-        MenuItem { text: "Clear custom settings"; enabled: Boolean(root.game.custom) && !library.running; onTriggered: library.action("reset") }
-        MenuItem { text: "Remove save data…"; enabled: !library.running; onTriggered: library.action("saves") }
+        GameMenuItem { text: qsTr("Game settings"); enabled: root.hasGame && !library.running; onTriggered: root.showOptions(false) }
+        GameMenuItem { text: qsTr("Open game folder"); onTriggered: library.action("folder") }
+        GameMenuItem { text: qsTr("Copy path"); onTriggered: library.action("copyPath") }
+        GameMenuItem { text: qsTr("Copy title ID"); onTriggered: library.action("copyTitleId") }
+        GameMenuSeparator {}
+        GameMenuItem { text: qsTr("View trophies"); enabled: library.canViewTrophies; onTriggered: library.action("trophies") }
+        GameMenuItem { text: qsTr("Cheats (experimental)"); visible: library.canPatch; height: visible ? implicitHeight : 0; enabled: !library.running; onTriggered: library.action("patches") }
+        GameMenuItem { text: qsTr("Edit compatibility"); visible: library.localCompatibility; height: visible ? implicitHeight : 0; onTriggered: compatibilityDialog.open() }
+        GameMenuSeparator {}
+        GameMenuItem { text: qsTr("Clear custom settings"); enabled: Boolean(root.game.custom) && !library.running; onTriggered: library.action("reset") }
+        GameMenuItem { text: qsTr("Remove save data…"); enabled: !library.running; onTriggered: library.action("saves") }
     }
     Dialog {
         id: navigationDialog
         anchors.centerIn: parent
-        title: "Unsaved changes"
+        title: qsTr("Unsaved changes")
         standardButtons: Dialog.Discard | Dialog.Cancel
         palette.window: "#242424"; palette.windowText: "#F7F8FB"
-        Label { text: "Discard your unsaved settings?"; color: "#F7F8FB" }
+        Label { text: qsTr("Discard your unsaved settings?"); color: "#F7F8FB" }
         onDiscarded: { settingsPage.dirty = false; root.options = false }
     }
     Dialog {
         id: compatibilityDialog
         anchors.centerIn: parent; width: Math.min(500, root.width - 60)
-        title: "Local compatibility"
+        title: qsTr("Local compatibility")
         standardButtons: Dialog.Save | Dialog.Cancel
         palette.window: "#242424"; palette.windowText: "#F7F8FB"
         onOpened: {
@@ -486,7 +550,7 @@ Rectangle {
         ColumnLayout {
             width: parent.width
             LibraryComboBox { id: compatibilityStatus; model: ["Unknown", "In game", "Logo", "Doesn't boot", "Main menu"]; Layout.fillWidth: true }
-            TextField { id: compatibilityComment; placeholderText: "Comment"; Layout.fillWidth: true }
+            TextField { id: compatibilityComment; placeholderText: qsTr("Comment"); Layout.fillWidth: true }
         }
         onAccepted: library.setCompatibility(compatibilityStatus.currentIndex, compatibilityComment.text)
     }

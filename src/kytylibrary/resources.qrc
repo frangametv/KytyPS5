@@ -6,6 +6,8 @@
   <file alias="RobotoMono-OFL.txt">fonts/RobotoMono-OFL.txt</file>
  </qresource>
  <qresource prefix="/icons">
+  <file alias="library-disc.svg">icons/library-disc.svg</file>
+  <file alias="library-gear.svg">icons/library-gear.svg</file>
   <file alias="edit-configuration.svg">icons/edit-configuration.svg</file>
   <file alias="global-settings.svg">icons/global-settings.svg</file>
   <file alias="input-mapping.svg">icons/input-mapping.svg</file>

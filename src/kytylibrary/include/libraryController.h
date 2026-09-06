@@ -32,6 +32,8 @@ private:
 
 class LibraryController final: public QObject {
 	Q_OBJECT
+	Q_PROPERTY(QString uiLanguage READ UiLanguage WRITE SetUiLanguage NOTIFY uiLanguageChanged)
+	Q_PROPERTY(QVariantList uiLanguages READ UiLanguages CONSTANT)
 	Q_PROPERTY(QVariantList games READ Games NOTIFY libraryChanged)
 	Q_PROPERTY(QVariantMap selected READ Selected NOTIFY selectionChanged)
 	Q_PROPERTY(QStringList folders READ Folders NOTIFY libraryChanged)
@@ -61,6 +63,9 @@ public:
 	bool                Scanning() const { return m_scanning; }
 	QString             Status() const { return m_status; }
 	QString             Version() const { return m_version; }
+	QString             UiLanguage() const;
+	QVariantList        UiLanguages() const;
+	void                SetUiLanguage(const QString& code);
 	QString             SettingsFile() const;
 	bool                UpdatesSupported() const;
 	bool                CheckUpdates() const;
@@ -88,6 +93,7 @@ public:
 	Q_INVOKABLE void         exportLog();
 	Q_INVOKABLE void         filterLog(const QString& text);
 signals:
+	void uiLanguageChanged();
 	void libraryChanged();
 	void selectionChanged();
 	void stateChanged();

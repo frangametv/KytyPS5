@@ -3,6 +3,7 @@
 #include "libraryController.h"
 #include "librarySettings.h"
 #include "mainDialog.h"
+#include "uiTranslations.h"
 
 #include <QApplication>
 #include <QDir>
@@ -262,6 +263,25 @@ private slots:
       QVERIFY(buttonBottom <= consoleTop);
       QVERIFY(start->height() >= 40);
     }
+    auto *railItem = find_visual(find_visual, root, "gameRail");
+    auto *titleItem = find_visual(find_visual, root, "gameTitle");
+    QVERIFY(railItem && titleItem);
+    for (int height : {640, 820, 900}) {
+      window.resize(980, height);
+      root->setProperty("consoleOpen", false);
+      QTest::qWait(50);
+      const auto titlePosition = titleItem->mapToScene(QPointF());
+      const auto railPosition = railItem->mapToScene(QPointF());
+      const auto titleHeight = titleItem->height();
+      root->setProperty("consoleOpen", true);
+      root->setProperty("consoleHeight", 2000);
+      QTest::qWait(50);
+      QCOMPARE(titleItem->mapToScene(QPointF()), titlePosition);
+      QCOMPARE(railItem->mapToScene(QPointF()), railPosition);
+      QCOMPARE(titleItem->height(), titleHeight);
+      QVERIFY(start->mapToScene(QPointF(0, start->height())).y() < console->mapToScene(QPointF()).y());
+    }
+    root->setProperty("consoleHeight", 160);
     auto *handle = find_visual(find_visual, root, "consoleResizeHandle");
     QVERIFY(handle);
     window.resize(1280, 900);
@@ -334,6 +354,47 @@ private slots:
     QTest::mouseClick(quick, Qt::LeftButton, Qt::NoModifier,
                       QPoint(quick->width() - 23, 22));
     QTRY_VERIFY(!window.isVisible());
+  }
+  void interfaceLanguages() {
+    UiTranslations::Instance().SetLanguage("en");
+    MainDialog window;
+    window.show();
+    QTest::qWait(100);
+    auto *controller = window.findChild<LibraryController *>();
+    auto *quick = window.findChild<QQuickWidget *>();
+    QVERIFY(controller && quick);
+    QCOMPARE(controller->UiLanguage(), QString("en"));
+    QVERIFY(controller->UiLanguages().size() >= 2);
+    auto *root = quick->rootObject();
+    QVERIFY(QMetaObject::invokeMethod(root, "showOptions", Q_ARG(QVariant, QVariant(true))));
+    auto *settings = root->findChild<QObject *>("settingsPage");
+    QVERIFY(settings);
+    const auto before = controller->settings(true);
+    controller->SetUiLanguage("it");
+    QTest::qWait(100);
+    QCOMPARE(QCoreApplication::translate("Library", "Library"), QString("Libreria"));
+    QCOMPARE(controller->settings(true), before);
+    QCOMPARE(settings->property("category").toString(), QString("Library"));
+    QSettings saved(controller->SettingsFile(), QSettings::IniFormat);
+    QCOMPARE(saved.value("MainDialog/ui_language").toString(), QString("it"));
+    const auto output = QCoreApplication::applicationDirPath() + "/library-qa";
+    QVERIFY(quick->grabFramebuffer().save(output + "/italian-settings.png"));
+    settings->setProperty("category", "Graphics");
+    QTest::qWait(100);
+    QVERIFY(quick->grabFramebuffer().save(output + "/italian-graphics.png"));
+    root->setProperty("options", false);
+    window.resize(980, 640);
+    root->setProperty("consoleOpen", true);
+    QTest::qWait(100);
+    QVERIFY(quick->grabFramebuffer().save(output + "/italian-library.png"));
+    UiTranslations::Instance().SetLanguage("en");
+    MainDialog::ReadSettings(saved);
+    QCOMPARE(UiTranslations::Instance().Language(), QString("it"));
+    controller->SetUiLanguage("en");
+    QCOMPARE(QCoreApplication::translate("Library", "Library"), QString("Library"));
+    controller->SetUiLanguage("not-a-language");
+    QCOMPARE(controller->UiLanguage(), QString("en"));
+    window.close();
   }
   void cleanupTestCase() { QVERIFY(QDir::setCurrent(m_old_directory)); }
 };

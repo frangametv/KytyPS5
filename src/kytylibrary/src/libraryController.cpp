@@ -4,6 +4,7 @@
 #include "configurationItem.h"
 #include "configurationListWidget.h"
 #include "librarySettings.h"
+#include "uiTranslations.h"
 #include "kytyGitVersion.h"
 #include "mainDialog.h"
 #include "patchesDialog.h"
@@ -318,7 +319,7 @@ void LibraryController::rescan() {
 
 void LibraryController::addFolder() {
 	if (Running() || m_scanning) return;
-	const auto path = QFileDialog::getExistingDirectory(m_window, "Add game folder");
+	const auto path = QFileDialog::getExistingDirectory(m_window, tr("Add game folder"));
 	if (path.isEmpty()) return;
 	auto folders = Folders();
 	folders.append(path);
@@ -407,19 +408,19 @@ void LibraryController::filterLog(const QString& text) {
 	m_log_filter.setFilterFixedString(text);
 }
 void LibraryController::exportLog() {
-	const auto path = QFileDialog::getSaveFileName(m_window, "Export console", "kyty-session.log",
+	const auto path = QFileDialog::getSaveFileName(m_window, tr("Export console"), "kyty-session.log",
 	                                               "Log files (*.log *.txt)");
 	if (path.isEmpty()) return;
 	QSaveFile  file(path);
 	const auto bytes = m_log.Text().toUtf8();
 	if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit())
-		QMessageBox::warning(m_window, "Export failed", file.errorString());
+		QMessageBox::warning(m_window, tr("Export failed"), file.errorString());
 }
 
 bool LibraryController::RequestClose() {
 	if (!Running()) return true;
-	if (QMessageBox::question(m_window, "Close KytyPS5",
-	                          "Stop the running game and close the library?") != QMessageBox::Yes)
+	if (QMessageBox::question(m_window, tr("Close KytyPS5"),
+	                          tr("Stop the running game and close the library?")) != QMessageBox::Yes)
 		return false;
 	m_close_when_finished = true;
 	stop();
@@ -428,4 +429,12 @@ bool LibraryController::RequestClose() {
 
 void LibraryController::SaveGeometry() {
 	m_library->WriteSettings();
+}
+
+QString LibraryController::UiLanguage() const { return UiTranslations::Instance().Language(); }
+QVariantList LibraryController::UiLanguages() const { return UiTranslations::Instance().Languages(); }
+void LibraryController::SetUiLanguage(const QString& code) {
+    if (!UiTranslations::Instance().SetLanguage(code)) return;
+    m_library->WriteSettings();
+    emit uiLanguageChanged();
 }

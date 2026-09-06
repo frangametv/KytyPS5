@@ -1,6 +1,8 @@
 #include "mainDialog.h"
 
 #include "libraryController.h"
+#include "uiTranslations.h"
+#include <QQmlEngine>
 
 #include <QCloseEvent>
 #include <QMessageBox>
@@ -40,6 +42,7 @@ MainDialog::MainDialog(QWidget* parent): QDialog(parent) {
 	m_quick->setClearColor(QColor("#0C0C0C"));
 	m_quick->rootContext()->setContextProperty("library", m_controller);
 	m_quick->rootContext()->setContextProperty("windowChrome", this);
+	connect(m_controller, &LibraryController::uiLanguageChanged, m_quick->engine(), &QQmlEngine::retranslate);
 	m_quick->setSource(QUrl("qrc:/library/Library.qml"));
 	layout->addWidget(m_quick);
 	UpdateWindowShape();
@@ -48,7 +51,7 @@ MainDialog::MainDialog(QWidget* parent): QDialog(parent) {
 		for (const auto& error: m_quick->errors())
 			errors.append(error.toString());
 		QTimer::singleShot(0, this, [this, errors] {
-			QMessageBox::critical(this, "Cannot load library", errors.join('\n'));
+			QMessageBox::critical(this, tr("Cannot load library"), errors.join('\n'));
 			close();
 		});
 	}
@@ -66,7 +69,7 @@ void MainDialog::closeEvent(QCloseEvent* event) {
 	                     ? m_quick->rootObject()->findChild<QObject*>("settingsPage")
 	                     : nullptr;
 	if (settings && settings->property("dirty").toBool() &&
-	    QMessageBox::question(this, "Unsaved changes", "Discard your unsaved settings and close?",
+	    QMessageBox::question(this, tr("Unsaved changes"), tr("Discard your unsaved settings and close?"),
 	                          QMessageBox::Discard | QMessageBox::Cancel,
 	                          QMessageBox::Cancel) != QMessageBox::Discard) {
 		event->ignore();
@@ -182,12 +185,14 @@ void MainDialog::WriteSettings(QSettings& settings) {
 	settings.beginGroup("MainDialog");
 	if (!last_geometry.isEmpty()) settings.setValue("geometry", last_geometry);
 	settings.setValue("check_updates_on_startup", check_updates);
+	settings.setValue("ui_language", UiTranslations::Instance().Language());
 	settings.endGroup();
 }
 void MainDialog::ReadSettings(QSettings& settings) {
 	settings.beginGroup("MainDialog");
 	last_geometry = settings.value("geometry").toByteArray();
 	check_updates = settings.value("check_updates_on_startup", true).toBool();
+	UiTranslations::Instance().SetLanguage(settings.value("ui_language", "en").toString());
 	settings.endGroup();
 }
 bool MainDialog::CheckUpdatesOnStartup() {

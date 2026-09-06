@@ -15,14 +15,14 @@ Button {
     font.pixelSize: 13
     font.weight: Font.DemiBold
     contentItem: Item {
-        implicitWidth: label.implicitWidth + (control.glyph.length ? 24 : 0)
+        implicitWidth: label.implicitWidth + (control.glyph.length ? ((control.glyph === "disc" || control.glyph === "gear") ? 30 : 24) : 0)
         implicitHeight: label.implicitHeight
         Row {
             anchors.centerIn: parent
             spacing: 10
             Canvas {
                 id: symbol
-                visible: control.glyph.length > 0
+                visible: control.glyph.length > 0 && control.glyph !== "disc" && control.glyph !== "gear"
                 width: visible ? 14 : 0; height: 14
                 anchors.verticalCenter: parent.verticalCenter
                 onPaint: {
@@ -43,6 +43,14 @@ Button {
                 }
                 Connections { target: control; function onGlyphChanged() { symbol.requestPaint() } }
             }
+            Image {
+                visible: control.glyph === "disc" || control.glyph === "gear"
+                source: control.glyph === "disc" ? "qrc:/icons/library-disc.svg" : "qrc:/icons/library-gear.svg"
+                sourceSize.width: 20; sourceSize.height: 20
+                width: 20; height: 20
+                anchors.verticalCenter: parent.verticalCenter
+                fillMode: Image.PreserveAspectFit
+            }
             Text {
                 id: label
                 text: control.text
@@ -60,6 +68,6 @@ Button {
         border.width: control.visualFocus ? 2 : 1
         border.color: control.visualFocus ? "#D3A07A" : control.outlined ? "#B87950" : control.primary || control.quiet ? "transparent" : "#333333"
     }
-    Accessible.name: text.length ? text : glyph === "more" ? "Game actions" : glyph
+    Accessible.name: text.length ? text : glyph === "more" ? qsTr("Game actions") : glyph
 }
 

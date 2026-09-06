@@ -9,6 +9,17 @@ file(GLOB launcher_src
 	"src/*.cpp"
 )
 
+# Each UTF-8 JSON catalog supplies its own language code and display name.
+file(GLOB library_catalogs CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/translations/*.json")
+set(library_catalog_qrc "${CMAKE_CURRENT_BINARY_DIR}/translations.qrc")
+file(WRITE "${library_catalog_qrc}" "<RCC><qresource prefix=\"/translations\">\n")
+foreach(catalog IN LISTS library_catalogs)
+    get_filename_component(catalog_name "${catalog}" NAME)
+    file(APPEND "${library_catalog_qrc}" "<file alias=\"${catalog_name}\">${catalog}</file>\n")
+endforeach()
+file(APPEND "${library_catalog_qrc}" "</qresource></RCC>\n")
+qt_add_resources(library_translation_resources "${library_catalog_qrc}")
+
 file(GLOB launcher_forms
 	"forms/*.ui"
 )
@@ -16,6 +27,7 @@ file(GLOB launcher_forms
 add_executable(launcher WIN32
 	${launcher_src}
 	${launcher_forms}
+    ${library_translation_resources}
 	resources.qrc
 )
 
@@ -211,9 +223,6 @@ include_what_you_use_with_mappings(launcher "${inc_headers}" "${iwyu_maps}")
 
 clang_tidy_check(launcher "" "${tidy_dirs}" "${inc_headers}")
 
-# Keep the existing build target for scripts, and expose the new product name.
-add_custom_target(kyty_library DEPENDS launcher)
-
 option(KYTY_BUILD_LIBRARY_TESTS "Build Qt library integration tests" OFF)
 if(BUILD_TESTING AND KYTY_BUILD_LIBRARY_TESTS)
     find_package(Qt6 COMPONENTS Test REQUIRED)
@@ -221,7 +230,7 @@ if(BUILD_TESTING AND KYTY_BUILD_LIBRARY_TESTS)
     list(FILTER library_test_src EXCLUDE REGEX "/main.cpp$")
     add_executable(library_process_fixture "${KYTY_TESTS_DIR}/library_process_fixture.cpp")
     add_executable(library_ui_tests "${KYTY_TESTS_DIR}/library_ui_tests.cpp"
-        ${library_test_src} ${launcher_forms} resources.qrc)
+        ${library_test_src} ${launcher_forms} resources.qrc ${library_translation_resources})
     set_target_properties(library_ui_tests PROPERTIES AUTOMOC ON AUTOUIC ON AUTORCC ON)
     target_include_directories(library_ui_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
     target_link_libraries(library_ui_tests PRIVATE Qt6::Test Qt6::Concurrent Qt6::Network

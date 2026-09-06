@@ -9,7 +9,8 @@ Button {
     implicitHeight: 44
     hoverEnabled: true
     HoverHandler { id: pointerHover }
-    Accessible.name: actionName === "maximize" && restored ? "Restore window" : actionName + " window"
+    Accessible.name: actionName === "maximize" ? (restored ? qsTr("Restore window") : qsTr("Maximize window")) :
+                     actionName === "minimize" ? qsTr("Minimize window") : qsTr("Close window")
     ToolTip.visible: pointerHover.hovered
     ToolTip.delay: 600
     ToolTip.text: Accessible.name

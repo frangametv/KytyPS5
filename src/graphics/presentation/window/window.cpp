@@ -996,14 +996,6 @@ void WindowContext::UpdateTitle() {
 	static uint64_t fps_frames  = 0;
 	static double   current_fps = 0.0;
 
-#if KYTY_BUILD == KYTY_BUILD_DEBUG
-	static constexpr auto build_type = "Debug";
-#elif KYTY_BUILD == KYTY_BUILD_RELEASE
-	static constexpr auto build_type = "Release";
-#else
-	static constexpr auto build_type = "Unknown";
-#endif
-
 	const auto now       = Common::Timer::QueryPerformanceCounter();
 	const auto frequency = Common::Timer::QueryPerformanceFrequency();
 	frame_num++;
@@ -1017,7 +1009,7 @@ void WindowContext::UpdateTitle() {
 
 	const auto* device_name = graphic_ctx.GetPhysicalDeviceProperties().deviceName.data();
 	auto text = fmt::format(
-	    "[{} | {}] {}{}{}{}{}{}[{}] [{}], frame: {}, fps: {:f}", KYTY_BUILD_LABEL, build_type,
+	    "[{}] {}{}{}{}{}{}[{}] [{}], frame: {}, fps: {:f}", KYTY_BUILD_LABEL,
 	    (has_title ? title : ""), (has_title ? ", " : ""), (has_title_id ? title_id : ""),
 	    (has_title_id ? ", " : ""), (has_app_ver ? app_ver : ""), (has_app_ver ? " " : ""),
 	    device_name, processor_name, frame_num, current_fps);
