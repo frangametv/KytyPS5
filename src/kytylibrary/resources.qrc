@@ -1,0 +1,25 @@
+<RCC>
+ <qresource prefix="/fonts">
+  <file alias="Roboto.ttf">fonts/Roboto.ttf</file>
+  <file alias="RobotoMono.ttf">fonts/RobotoMono.ttf</file>
+  <file alias="Roboto-OFL.txt">fonts/Roboto-OFL.txt</file>
+  <file alias="RobotoMono-OFL.txt">fonts/RobotoMono-OFL.txt</file>
+ </qresource>
+ <qresource prefix="/icons">
+  <file alias="edit-configuration.svg">icons/edit-configuration.svg</file>
+  <file alias="global-settings.svg">icons/global-settings.svg</file>
+  <file alias="input-mapping.svg">icons/input-mapping.svg</file>
+  <file alias="remove-configuration.svg">icons/remove-configuration.svg</file>
+ </qresource>
+ <qresource prefix="/styles">
+  <file alias="launcher.qss">styles/launcher.qss</file>
+ </qresource>
+ <qresource prefix="/library">
+  <file alias="Library.qml">qml/Library.qml</file>
+  <file alias="LibraryButton.qml">qml/LibraryButton.qml</file>
+  <file alias="WindowButton.qml">qml/WindowButton.qml</file>
+  <file alias="SettingsPage.qml">qml/SettingsPage.qml</file>
+  <file alias="LibraryComboBox.qml">qml/LibraryComboBox.qml</file>
+  <file alias="SettingField.qml">qml/SettingField.qml</file>
+ </qresource>
+</RCC>

@@ -32,8 +32,8 @@ static std::string GetBuildString() {
 	    Debug::GetCompiler() + "-" + Debug::GetLinker() + "-" + Debug::GetBitness();
 
 	std::string str =
-	    fmt::format("{}, {}, ver = {}, git = {}, date = {}", type.c_str(), compiler.c_str(),
-	                KYTY_VERSION, KYTY_GIT_VERSION, date.ToString().c_str());
+	    fmt::format("{} | {}, {}, date = {}", KYTY_BUILD_LABEL, type.c_str(), compiler.c_str(),
+	                date.ToString().c_str());
 
 	return str;
 }
@@ -350,6 +350,8 @@ int main(int argc, char* argv[]) {
 		return 0;
 	}
 
+	::printf("%s\n", GetBuildString().c_str());
+	::fflush(stdout);
 	Run(options);
 
 	return 0;

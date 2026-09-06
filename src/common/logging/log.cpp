@@ -4,8 +4,10 @@
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
 #include "common/stringUtils.h"
+#include "kytyGitVersion.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fmt/format.h>
 #include <memory>
@@ -68,8 +70,9 @@ void WriteStdout(std::string_view text, fmt::text_style style = {}) {
 
 namespace Log {
 
-static bool                            g_initialized = false;
-static Direction                       g_direction   = Direction::Console;
+static bool                            g_initialized           = false;
+static bool                            g_mirror_file_to_stdout = false;
+static Direction                       g_direction             = Direction::Console;
 static std::filesystem::path           g_output_file;
 static std::mutex                      g_logger_mutex;
 static std::shared_ptr<spdlog::logger> g_logger;
@@ -91,6 +94,9 @@ static void SetupLogger() {
 			break;
 		case Direction::Console:
 			g_logger = MakeLogger("kyty", std::make_shared<spdlog::sinks::stdout_sink_mt>());
+			if (g_mirror_file_to_stdout) {
+				g_logger->flush_on(spdlog::level::info);
+			}
 			break;
 		case Direction::File:
 			if (!g_output_file.empty()) {
@@ -117,6 +123,11 @@ static void WriteImpl(std::string_view text, fmt::text_style style = {}) {
 
 	if (g_direction == Direction::Silent) {
 		return;
+	}
+
+	// The library captures stdout while retaining the configured log file.
+	if (g_direction == Direction::File && g_mirror_file_to_stdout) {
+		WriteStdout(text, style);
 	}
 
 	if (auto logger = GetLogger()) {
@@ -150,7 +161,9 @@ void WriteFatal(fmt::text_style style, std::string_view text) {
 }
 
 void Initialize() {
-	g_initialized = true;
+	g_initialized           = true;
+	const auto* mirror      = std::getenv("KYTY_LIBRARY_STDOUT");
+	g_mirror_file_to_stdout = mirror != nullptr && std::string_view(mirror) == "1";
 	switch (Config::GetPrintfDirection()) {
 		case Config::OutputDirection::Silent: g_direction = Direction::Silent; break;
 		case Config::OutputDirection::Console: g_direction = Direction::Console; break;
@@ -159,6 +172,8 @@ void Initialize() {
 	g_output_file =
 	    (g_direction == Direction::File ? Config::GetPrintfOutputFile() : std::filesystem::path {});
 	SetupLogger();
+	WriteImpl(KYTY_BUILD_LABEL "\n");
+	Flush();
 }
 
 void Shutdown() {

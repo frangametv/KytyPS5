@@ -7,6 +7,7 @@
 #include <QMap>
 #include <QString>
 #include <QStringList>
+#include <QVariantList>
 #include <QWidget>
 
 class ConfigurationItem;
@@ -44,14 +45,22 @@ public:
 	}
 	[[nodiscard]] bool CanViewSelectedTrophies() const;
 
-	bool EnsureGameDirectory();
-	void ScanGameDirectory();
-	void ViewTrophies();
+	bool                 EnsureGameDirectory();
+	void                 ScanGameDirectory();
+	void                 ViewTrophies();
+	QVariantList         LibraryEntries() const;
+	void                 SelectPath(const QString& path);
+	const Configuration& GlobalConfiguration() const { return m_global_info; }
+	void                 SaveConfiguration(const Configuration& info, bool global);
+	void                 SetGameDirectories(const QStringList& dirs);
+	void                 SetCompatibility(int status, const QString& comment);
+	bool                 IsLocalCompatibility() const;
 
 signals:
 
 	void Run();
 	void Select();
+	void LibraryChanged();
 
 protected:
 	void changeEvent(QEvent* event) override;

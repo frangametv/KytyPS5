@@ -1,0 +1,1 @@
+set(KYTY_RELEASE_VERSION "Fran1")

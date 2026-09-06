@@ -259,16 +259,17 @@ ConfigurationListWidget::~ConfigurationListWidget() {
 
 void ConfigurationListWidget::changeEvent(QEvent* event) {
 	QWidget::changeEvent(event);
-	if (event->type() == QEvent::ApplicationPaletteChange || event->type() == QEvent::PaletteChange) {
+	if (event->type() == QEvent::ApplicationPaletteChange ||
+	    event->type() == QEvent::PaletteChange) {
 		UpdateToolbarIcons();
 	}
 }
 
 void ConfigurationListWidget::UpdateToolbarIcons() {
-	const auto color = palette().color(QPalette::Window).lightness() < 128 ? QColor(Qt::white)
-	                                                                      : QColor(Qt::black);
+	const auto color =
+	    palette().color(QPalette::Window).lightness() < 128 ? QColor(Qt::white) : QColor(Qt::black);
 	const auto set_icon = [&color](QToolButton* button, const QString& resource) {
-		auto pixmap = QIcon(resource).pixmap(button->iconSize(), button->devicePixelRatioF());
+		auto     pixmap = QIcon(resource).pixmap(button->iconSize(), button->devicePixelRatioF());
 		QPainter painter(&pixmap);
 		painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
 		painter.fillRect(pixmap.rect(), color);
@@ -395,6 +396,7 @@ void ConfigurationListWidget::ApplyCompatibility() {
 	if (sorting_enabled) {
 		m_ui->cfgs_list->sortItems(sort_column, sort_order);
 	}
+	emit LibraryChanged();
 }
 
 static Configuration* CloneConfiguration(const Configuration& source) {
@@ -578,12 +580,7 @@ void ConfigurationListWidget::ScanGameDirectory() {
 			continue;
 		}
 
-		QList<QDir> pending_dirs;
-		const auto  root_subdirs =
-		    root.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
-		for (const auto& subdir: root_subdirs) {
-			pending_dirs.append(QDir(subdir.absoluteFilePath()));
-		}
+		QList<QDir> pending_dirs {root};
 
 		while (!pending_dirs.isEmpty()) {
 			QDir game_dir = pending_dirs.takeFirst();
@@ -665,6 +662,7 @@ void ConfigurationListWidget::ScanGameDirectory() {
 
 	m_ui->cfgs_list->sortItems(GAME_NAME_COLUMN, Qt::AscendingOrder);
 	filter_configurations(m_ui->search_line_edit->text());
+	emit LibraryChanged();
 }
 
 void ConfigurationListWidget::edit_configuration() {
@@ -684,6 +682,82 @@ void ConfigurationListWidget::edit_configuration() {
 		WriteSettings();
 		ScanGameDirectory();
 	}
+}
+
+QVariantList ConfigurationListWidget::LibraryEntries() const {
+	QVariantList entries;
+	for (int i = 0; i < m_ui->cfgs_list->topLevelItemCount(); ++i) {
+		const auto& info =
+		    static_cast<ConfigurationItem*>(m_ui->cfgs_list->topLevelItem(i))->GetInfo();
+		auto image = [&info](const QString& name) {
+			const auto path = QDir(info.basedir).filePath("sce_sys/" + name);
+			return QFileInfo::exists(path) ? QUrl::fromLocalFile(path).toString() : QString();
+		};
+		const QStringList statuses {"Unknown", "In game", "Logo", "Doesn't boot", "Main menu"};
+		entries.append(
+		    QVariantMap {{"name", info.name},
+		                 {"path", info.game_path},
+		                 {"titleId", info.title_id},
+		                 {"version", info.gameVersion},
+		                 {"firmware", info.firmwareVer},
+		                 {"cover", image("icon0.png")},
+		                 {"backdrop", image("pic0.png")},
+		                 {"status", statuses.value(static_cast<int>(info.game_status), "Unknown")},
+		                 {"statusIndex", static_cast<int>(info.game_status)},
+		                 {"comment", info.game_comment},
+		                 {"custom", info.custom_settings}});
+	}
+	return entries;
+}
+
+void ConfigurationListWidget::SelectPath(const QString& path) {
+	for (int i = 0; i < m_ui->cfgs_list->topLevelItemCount(); ++i) {
+		auto* item = static_cast<ConfigurationItem*>(m_ui->cfgs_list->topLevelItem(i));
+		if (item->GetInfo().game_path == path) {
+			m_ui->cfgs_list->setCurrentItem(item);
+			SelectItem(item);
+			return;
+		}
+	}
+	m_ui->cfgs_list->setCurrentItem(nullptr);
+}
+
+void ConfigurationListWidget::SaveConfiguration(const Configuration& info, bool global) {
+	const auto path = m_selected_item ? m_selected_item->GetInfo().game_path : QString();
+	if (global) {
+		m_global_info.CopyEmulatorSettingsFrom(info);
+	} else if (m_selected_item) {
+		m_selected_item->GetInfo().CopyEmulatorSettingsFrom(info);
+		m_selected_item->GetInfo().custom_settings = true;
+		delete m_custom_infos.take(path);
+		m_custom_infos.insert(path, CloneConfiguration(m_selected_item->GetInfo()));
+	}
+	WriteSettings();
+	ScanGameDirectory();
+	SelectPath(path);
+}
+
+void ConfigurationListWidget::SetGameDirectories(const QStringList& dirs) {
+	m_game_dirs = NormalizeGameDirectories(dirs);
+	WriteSettings();
+	ScanGameDirectory();
+}
+
+bool ConfigurationListWidget::IsLocalCompatibility() const {
+	return m_compatibility->IsLocal();
+}
+
+void ConfigurationListWidget::SetCompatibility(int status, const QString& comment) {
+	if (!m_selected_item || !m_compatibility->IsLocal() || status < 0 || status > 4) {
+		return;
+	}
+	auto& info = m_selected_item->GetInfo();
+	if (info.title_id.isEmpty()) {
+		return;
+	}
+	m_compatibility->SetStatus(info.title_id, static_cast<Configuration::GameStatus>(status));
+	m_compatibility->SetComment(info.title_id, comment);
+	ApplyCompatibility();
 }
 
 void ConfigurationListWidget::delete_configuartion() {

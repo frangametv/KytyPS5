@@ -2,19 +2,19 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug launcher UI",
+            "name": "Debug Kyty library",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}\\_Build\\vscode-clang\\launcher\\launcher.exe",
+            "program": "${workspaceFolder}\\_Build\\vscode-clang\\kytylibrary\\kyty_library.exe",
             "args": [],
             "stopAtEntry": false,
-            "cwd": "${workspaceFolder}\\_Build\\vscode-clang\\launcher",
+            "cwd": "${workspaceFolder}\\_Build\\vscode-clang\\kytylibrary",
             "environment": [],
             "externalConsole": false,
             "linux": {
                 "type": "cppdbg",
-                "program": "${workspaceFolder}/_Build/vscode-clang/launcher/launcher",
-                "cwd": "${workspaceFolder}/_Build/vscode-clang/launcher",
+                "program": "${workspaceFolder}/_Build/vscode-clang/kytylibrary/kyty_library",
+                "cwd": "${workspaceFolder}/_Build/vscode-clang/kytylibrary",
                 "MIMode": "gdb",
                 "miDebuggerPath": "/usr/bin/gdb"
             }

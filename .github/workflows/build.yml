@@ -18,11 +18,13 @@ jobs:
       release_tag: ${{ steps.release_tag.outputs.value }}
 
     steps:
+      - uses: actions/checkout@v4
       - name: Generate release tag
         id: release_tag
         shell: bash
         run: |
-          echo "value=KytyPS5-$(date -u +'%Y-%m-%d')-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          cmake -DGIT_EXECUTABLE="$(command -v git)" -DGIT_WORKING_DIRECTORY="$GITHUB_WORKSPACE" -DMETADATA_FILE="$RUNNER_TEMP/version-output" -P src/generate_version.cmake
+          cat "$RUNNER_TEMP/version-output" >> "$GITHUB_OUTPUT"
 
   windows:
     name: Build KytyPS5 (Windows)
@@ -95,6 +97,7 @@ jobs:
             -G Ninja ^
             -DCMAKE_BUILD_TYPE=Release ^
             -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON ^
+            -DKYTY_BUILD_LIBRARY_TESTS=ON ^
             -DKYTY_BUILD_ORIGIN=%KYTY_BUILD_ORIGIN% ^
             -DKYTY_BUILD_REPOSITORY=%KYTY_BUILD_REPOSITORY% ^
             -DKYTY_RELEASE_TAG=${{ needs.metadata.outputs.release_tag }} ^
@@ -105,12 +108,12 @@ jobs:
       - name: Build
         shell: cmd
         run: |
-          cmake --build _Build/windows --target launcher audio_out2_port_tests ime_dialog_tests virtual_memory_allocation_tests --parallel
+          cmake --build _Build/windows --target kyty_library library_ui_tests audio_out2_port_tests ime_dialog_tests virtual_memory_allocation_tests --parallel
 
       - name: Test
         shell: cmd
         run: |
-          ctest --test-dir _Build/windows --output-on-failure -R "^(audio_out2_port|ime_dialog|virtual_memory_allocation)$"
+          ctest --test-dir _Build/windows --output-on-failure -R "^(audio_out2_port|ime_dialog|virtual_memory_allocation|library_ui_tests)$"
 
       - name: Install
         shell: cmd
@@ -120,7 +123,7 @@ jobs:
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: KytyPS5-Windows-x64
+          name: ${{ needs.metadata.outputs.release_tag }}-win
           path: _Build/windows/install/**
           if-no-files-found: error
 
@@ -174,6 +177,7 @@ jobs:
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+            -DKYTY_BUILD_LIBRARY_TESTS=ON \
             -DKYTY_BUILD_ORIGIN="$KYTY_BUILD_ORIGIN" \
             -DKYTY_BUILD_REPOSITORY="$KYTY_BUILD_REPOSITORY" \
             -DKYTY_RELEASE_TAG="${{ needs.metadata.outputs.release_tag }}" \
@@ -186,14 +190,14 @@ jobs:
         shell: bash
         run: |
           cmake --build _Build/macos \
-            --target launcher audio_out2_port_tests ime_dialog_tests virtual_memory_allocation_tests \
+            --target kyty_library library_ui_tests audio_out2_port_tests ime_dialog_tests virtual_memory_allocation_tests \
             --parallel
 
       - name: Test
         shell: bash
         run: |
           ctest --test-dir _Build/macos --output-on-failure \
-            -R '^(audio_out2_port|ime_dialog|virtual_memory_allocation)$'
+            -R '^(audio_out2_port|ime_dialog|virtual_memory_allocation|library_ui_tests)$'
 
       - name: Install
         shell: bash
@@ -256,7 +260,7 @@ jobs:
         shell: bash
         run: |
           install_dir="_Build/macos/install"
-          archive="$RUNNER_TEMP/KytyPS5-macOS-x86_64.zip"
+          archive="$RUNNER_TEMP/${{ needs.metadata.outputs.release_tag }}-mac.zip"
           (
             cd "$install_dir"
             zip -qry "$archive" .
@@ -266,8 +270,8 @@ jobs:
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: KytyPS5-macOS-x86_64
-          path: ${{ runner.temp }}/KytyPS5-macOS-x86_64.zip
+          name: ${{ needs.metadata.outputs.release_tag }}-mac
+          path: ${{ runner.temp }}/${{ needs.metadata.outputs.release_tag }}-mac.zip
           if-no-files-found: error
 
   linux:
@@ -334,6 +338,7 @@ jobs:
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+            -DKYTY_BUILD_LIBRARY_TESTS=ON \
             -DKYTY_BUILD_ORIGIN="$KYTY_BUILD_ORIGIN" \
             -DKYTY_BUILD_REPOSITORY="$KYTY_BUILD_REPOSITORY" \
             -DKYTY_RELEASE_TAG="${{ needs.metadata.outputs.release_tag }}" \
@@ -360,7 +365,7 @@ jobs:
         shell: bash
         run: |
           cmake --build _Build/linux \
-            --target launcher page_manager_tests memory_tracker_tests \
+            --target kyty_library library_ui_tests page_manager_tests memory_tracker_tests \
               audio_out2_port_tests ime_dialog_tests virtual_memory_allocation_tests \
             --parallel
 
@@ -368,7 +373,7 @@ jobs:
         shell: bash
         run: |
           ctest --test-dir _Build/linux --output-on-failure \
-            -R '^(audio_out2_port|ime_dialog|page_manager|memory_tracker|virtual_memory_allocation)$'
+            -R '^(audio_out2_port|ime_dialog|page_manager|memory_tracker|virtual_memory_allocation|library_ui_tests)$'
 
       - name: Install
         shell: bash
@@ -378,11 +383,11 @@ jobs:
       - name: Verify artifacts
         shell: bash
         run: |
-          file _Build/linux/install/launcher
+          file _Build/linux/install/kyty_library
           file _Build/linux/install/kyty_emulator
           file _Build/linux/install/kyty_emulator | grep -q "ELF 64-bit LSB .*x86-64"
           ldd _Build/linux/install/kyty_emulator > /dev/null
-          readelf -d _Build/linux/install/launcher | grep -q 'RPATH.*\$ORIGIN/lib'
+          readelf -d _Build/linux/install/kyty_library | grep -q 'RPATH.*\$ORIGIN/lib'
           while IFS= read -r -d '' binary; do
             while read -r dependency; do
               test -e "_Build/linux/install/lib/$dependency"
@@ -391,15 +396,15 @@ jobs:
                 sed -n 's/.*Shared library: \[\(libQt6[^]]*\|libicu[^]]*\)\].*/\1/p'
             )
           done < <(
-            find _Build/linux/install/launcher _Build/linux/install/plugins \
-              -type f \( -name launcher -o -name '*.so' \) -print0
+            find _Build/linux/install/kyty_library _Build/linux/install/plugins _Build/linux/install/qml \
+              -type f \( -name kyty_library -o -name '*.so' \) -print0
           )
           _Build/linux/install/kyty_emulator --help > /dev/null
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: KytyPS5-Linux-x86_64
+          name: ${{ needs.metadata.outputs.release_tag }}-linux
           path: _Build/linux/install/**
           if-no-files-found: error
 
@@ -408,7 +413,6 @@ jobs:
     if: >-
       always() &&
       github.event_name == 'push' &&
-      github.repository == 'KytyPS5/KytyPS5' &&
       (needs.windows.result == 'success' ||
        needs.macos.result == 'success' ||
        needs.linux.result == 'success')
@@ -424,53 +428,53 @@ jobs:
         if: needs.windows.result == 'success'
         uses: actions/download-artifact@v4
         with:
-          name: KytyPS5-Windows-x64
-          path: artifacts/KytyPS5-Windows-x64
+          name: ${{ needs.metadata.outputs.release_tag }}-win
+          path: artifacts/${{ needs.metadata.outputs.release_tag }}-win
 
       - name: Download macOS build
         if: needs.macos.result == 'success'
         uses: actions/download-artifact@v4
         with:
-          name: KytyPS5-macOS-x86_64
-          path: artifacts/KytyPS5-macOS-x86_64
+          name: ${{ needs.metadata.outputs.release_tag }}-mac
+          path: artifacts/${{ needs.metadata.outputs.release_tag }}-mac
 
       - name: Download Linux build
         if: needs.linux.result == 'success'
         uses: actions/download-artifact@v4
         with:
-          name: KytyPS5-Linux-x86_64
-          path: artifacts/KytyPS5-Linux-x86_64
+          name: ${{ needs.metadata.outputs.release_tag }}-linux
+          path: artifacts/${{ needs.metadata.outputs.release_tag }}-linux
 
       - name: Package Windows build
         if: needs.windows.result == 'success'
         shell: bash
         run: |
-          windows_dir="artifacts/KytyPS5-Windows-x64"
+          windows_dir="artifacts/${{ needs.metadata.outputs.release_tag }}-win"
           test -d "$windows_dir"
           (
             cd "$windows_dir"
-            zip -r "$GITHUB_WORKSPACE/$RELEASE_NAME-Windows-x64.zip" .
+            zip -r "$GITHUB_WORKSPACE/$RELEASE_NAME-win.zip" .
           )
 
       - name: Package macOS build
         if: needs.macos.result == 'success'
         shell: bash
         run: |
-          macos_archive="artifacts/KytyPS5-macOS-x86_64/KytyPS5-macOS-x86_64.zip"
+          macos_archive="artifacts/${{ needs.metadata.outputs.release_tag }}-mac/${{ needs.metadata.outputs.release_tag }}-mac.zip"
           test -f "$macos_archive"
-          cp "$macos_archive" "$RELEASE_NAME-macOS-x86_64.zip"
+          cp "$macos_archive" "$RELEASE_NAME-mac.zip"
 
       - name: Package Linux build
         if: needs.linux.result == 'success'
         shell: bash
         run: |
-          linux_dir="artifacts/KytyPS5-Linux-x86_64"
+          linux_dir="artifacts/${{ needs.metadata.outputs.release_tag }}-linux"
           test -d "$linux_dir"
           chmod a+x \
-            "$linux_dir/launcher" \
+            "$linux_dir/kyty_library" \
             "$linux_dir/kyty_emulator"
           tar -C "$linux_dir" -czf \
-            "$GITHUB_WORKSPACE/$RELEASE_NAME-Linux-x86_64.tar.gz" .
+            "$GITHUB_WORKSPACE/$RELEASE_NAME-linux.tar.gz" .
 
       - name: Create release
         shell: bash
@@ -479,9 +483,9 @@ jobs:
         run: |
           assets=()
           for artifact in \
-            "$RELEASE_NAME-Windows-x64.zip" \
-            "$RELEASE_NAME-macOS-x86_64.zip" \
-            "$RELEASE_NAME-Linux-x86_64.tar.gz"; do
+            "$RELEASE_NAME-win.zip" \
+            "$RELEASE_NAME-mac.zip" \
+            "$RELEASE_NAME-linux.tar.gz"; do
             if [[ -f "$artifact" ]]; then
               assets+=("$artifact")
             fi

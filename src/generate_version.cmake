@@ -1,19 +1,10 @@
-set(KYTY_GIT_VERSION "unknown")
+include("${CMAKE_CURRENT_LIST_DIR}/../version.cmake")
+if(NOT KYTY_RELEASE_VERSION MATCHES "^Fran[1-9][0-9]*$")
+	message(FATAL_ERROR "KYTY_RELEASE_VERSION must be Fran followed by a positive integer")
+endif()
 set(KYTY_GIT_HASH "unknown")
 set(KYTY_GIT_REVISION "unknown")
 if(GIT_EXECUTABLE)
-	execute_process(
-		COMMAND "${GIT_EXECUTABLE}" describe --tags --always --dirty
-		WORKING_DIRECTORY "${GIT_WORKING_DIRECTORY}"
-		OUTPUT_VARIABLE KYTY_GIT_VERSION
-		OUTPUT_STRIP_TRAILING_WHITESPACE
-		RESULT_VARIABLE GIT_RESULT
-		ERROR_QUIET
-	)
-	if(NOT GIT_RESULT EQUAL 0)
-		set(KYTY_GIT_VERSION "unknown")
-	endif()
-
 	execute_process(
 		COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
 		WORKING_DIRECTORY "${GIT_WORKING_DIRECTORY}"
@@ -34,8 +25,13 @@ if(GIT_EXECUTABLE)
 			ERROR_QUIET
 		)
 		if(NOT GIT_DIRTY_RESULT EQUAL 0)
-			string(APPEND KYTY_GIT_HASH "-dirty")
+			string(APPEND KYTY_GIT_HASH "-dev")
 		endif()
 	endif()
 endif()
-configure_file("${INPUT_FILE}" "${OUTPUT_FILE}")
+set(KYTY_GIT_VERSION "${KYTY_RELEASE_VERSION}: ${KYTY_GIT_HASH}")
+if(DEFINED METADATA_FILE)
+	file(WRITE "${METADATA_FILE}" "value=KytyPS5-${KYTY_RELEASE_VERSION}-${KYTY_GIT_HASH}\n")
+else()
+	configure_file("${INPUT_FILE}" "${OUTPUT_FILE}")
+endif()

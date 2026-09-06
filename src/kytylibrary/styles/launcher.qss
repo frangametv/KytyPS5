@@ -1,0 +1,19 @@
+/* Shared dark surfaces for the library's native tools and file dialogs. */
+QDialog { background: #1B1B1B; }
+QWidget { font-size: 13px; }
+QGroupBox { border: 1px solid #353535; border-radius: 8px; margin-top: 16px; padding: 16px 10px 10px; }
+QGroupBox::title { subcontrol-origin: margin; left: 12px; color: #C0C5CF; }
+QPushButton, QToolButton { background: #242424; border: 1px solid #353535; border-radius: 8px; padding: 7px 12px; }
+QPushButton:hover, QToolButton:hover { background: #303030; border-color: #B87950; }
+QPushButton:default { background: #B87950; color: #1C1510; border-color: #B87950; }
+QPushButton:disabled, QToolButton:disabled { color: #777F8E; }
+QLineEdit, QComboBox, QSpinBox { background: #161616; border: 1px solid #353535; border-radius: 8px; padding: 7px; }
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border-color: #B87950; }
+QListWidget, QTreeWidget, QTableWidget, QPlainTextEdit, QTextEdit { background: #161616; border: 1px solid #353535; border-radius: 8px; }
+QHeaderView::section { background: #242424; color: #C0C5CF; border: 0; padding: 9px; }
+QTabBar::tab { background: #161616; padding: 10px 18px; border-bottom: 2px solid transparent; }
+QTabBar::tab:selected { background: #242424; border-bottom-color: #B87950; }
+QMenu { background: #242424; border: 1px solid #353535; padding: 6px; }
+QMenu::item { padding: 8px 24px; border-radius: 8px; }
+QMenu::item:selected { background: #B87950; color: #1C1510; }
+QToolTip { color: #F7F8FB; background: #242424; border: 1px solid #353535; padding: 6px; }

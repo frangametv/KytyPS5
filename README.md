@@ -168,7 +168,7 @@ the Vulkan/SPIR-V validation rules.
 - Ninja
 - Visual Studio 2022 or Build Tools 2022 with the **Desktop development with C++** workload and
   **C++ Clang tools for Windows** component
-- Qt 6 for MSVC 2022 64-bit, including Concurrent, Network, and Widgets
+- Qt 6 for MSVC 2022 64-bit, including Concurrent, Network, Widgets, Qt Quick, and Qt Quick Controls (Qt 6.8 or newer)
 
 The Microsoft C++ compiler (`cl.exe`) is not supported; use `clang-cl`.
 
@@ -188,7 +188,7 @@ cmake -S . -B _Build/windows -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPI
 Build the launcher and stage a runnable installation:
 
 ```powershell
-cmake --build _Build/windows --target launcher
+cmake --build _Build/windows --target kyty_library
 cmake --install _Build/windows --prefix _Build/windows/install
 ```
 
@@ -210,7 +210,7 @@ sudo apt-get install --no-install-recommends \
 ```
 
 Qt 6 (Concurrent, Network, Widgets) is also required — either the distribution packages
-(`qt6-base-dev`) or an official Qt installation.
+(`qt6-base-dev`, `qt6-declarative-dev`, and the Qt Quick / Basic Controls QML runtime modules; Qt 6.8 or newer) or an official Qt installation.
 
 ```bash
 git submodule update --init --recursive
@@ -219,7 +219,7 @@ cmake -S . -B _Build/linux -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
   -DCMAKE_PREFIX_PATH="$Qt6_DIR"
 
-cmake --build _Build/linux --target launcher --parallel
+cmake --build _Build/linux --target kyty_library --parallel
 cmake --install _Build/linux --prefix _Build/linux/install
 ```
 
@@ -253,7 +253,7 @@ cmake -S . -B _Build/macos -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
   -DCMAKE_PREFIX_PATH="$Qt6_DIR"
 
-cmake --build _Build/macos --target launcher --parallel
+cmake --build _Build/macos --target kyty_library --parallel
 cmake --install _Build/macos --prefix _Build/macos/install
 ```
 
@@ -291,7 +291,7 @@ Use `_Build/linux` instead of `_Build/windows` for a Linux build.
 
 A ready-made Visual Studio Code setup is included in [`.vscode`](.vscode). It configures CMake
 Tools to build the project with Ninja and `clang-cl` and provides launch profiles for both
-`launcher.exe` and `kyty_emulator.exe`. It is Windows-only: VS Code settings cannot select a
+`kyty_library.exe` and `kyty_emulator.exe`. It is Windows-only: VS Code settings cannot select a
 compiler per platform, so on Linux configure from the command line as shown above.
 
 Before using it:
@@ -311,20 +311,20 @@ Update your graphics driver before reporting rendering problems.
 To use the graphical launcher:
 
 ```powershell
-.\_Build\windows\install\launcher.exe
+.\_Build\windows\install\kyty_library.exe
 ```
 
 ```bash
-./_Build/linux/install/launcher
+./_Build/linux/install/kyty_library
 ```
 
 ```bash
 open _Build/macos/install/KytyPS5.app  # or double-click in Finder
 ```
 
-On first launch, add one or more game folders in the global settings. The launcher searches those
-folders recursively for game directories containing `eboot.bin`. Select a detected game and run it
-from the game list.
+On first launch, add one or more game folders.
+The Kyty Library searches those folders recursively for game directories containing `eboot.bin`.
+Select a detected game and run it from the game list.
 
 The emulator can also be started directly with a legally obtained game directory or ELF file:
 

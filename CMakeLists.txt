@@ -664,7 +664,7 @@ endif()
 
 install(TARGETS kyty_emulator DESTINATION .)
 if(KYTY_BUILD_LAUNCHER)
-	add_subdirectory("${KYTY_SOURCE_DIR}/launcher" "${CMAKE_CURRENT_BINARY_DIR}/launcher")
+	add_subdirectory("${KYTY_SOURCE_DIR}/kytylibrary" "${CMAKE_CURRENT_BINARY_DIR}/kytylibrary")
 endif()
 if(KYTY_CLANG_CL)
 	install(FILES "${KYTY_THIRD_PARTY_DIR}/winpthread/bin/libwinpthread-1.dll" DESTINATION .)
