@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/frangametv/sharpemu/releases">
+  <a href="https://github.com/frangametv/KytyPS5/releases">
     <img src="https://img.shields.io/badge/Download-GitHub%20Releases-2EA44F?style=for-the-badge&logo=github&logoColor=white" alt="Download from GitHub Releases">
   </a>
 </p>
