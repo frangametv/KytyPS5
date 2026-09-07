@@ -68,12 +68,18 @@ private slots:
     QVariantMap values;
     for (const auto &value : fields)
       values.insert(value.toMap()["key"].toString(), value.toMap()["value"]);
+    values["readback_linear_images"] = true;
     values["console_language"] = 5;
     values["screen_resolution"] = "1920x1080";
     values["user_name"] = "Fran";
     values["printf_direction"] = "File";
     values["printf_output_file"] = "logs/test output.txt";
     QVERIFY(LibrarySettings::Apply(source, values).isEmpty());
+    QVERIFY(source.readback_linear_images);
+    const auto args = CreateEmulatorArgs(source);
+    const auto readback = args.indexOf("--readback-linear-images");
+    QVERIFY(readback >= 0);
+    QCOMPARE(args.value(readback + 1), QString("true"));
     QCOMPARE(source.console_language, 5);
     QCOMPARE(source.screen_resolution, Configuration::Resolution::R1920X1080);
     QSettings saved("roundtrip.ini", QSettings::IniFormat);

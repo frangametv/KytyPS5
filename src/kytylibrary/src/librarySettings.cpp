@@ -85,6 +85,14 @@ QVariantList LibrarySettings::Fields(const Configuration& info) {
 	                           {"choices", QStringList()},
 	                           {"minimum", 0},
 	                           {"maximum", 0}});
+	fields.append(QVariantMap {{"key", "readback_linear_images"},
+	                           {"label", "Enable readback"},
+	                           {"section", "Graphics"},
+	                           {"kind", "bool"},
+	                           {"value", info.readback_linear_images},
+	                           {"choices", QStringList()},
+	                           {"minimum", 0},
+	                           {"maximum", 0}});
 	fields.append(QVariantMap {{"key", "vblank_frequency"},
 	                           {"label", "Vblank frequency (Hz)"},
 	                           {"section", "Graphics"},
@@ -223,6 +231,9 @@ QString LibrarySettings::Apply(Configuration& info, const QVariantMap& values) {
 	}
 	if (values.contains("fullscreen_enabled")) {
 		info.fullscreen_enabled = values.value("fullscreen_enabled").toBool();
+	}
+	if (values.contains("readback_linear_images")) {
+		info.readback_linear_images = values.value("readback_linear_images").toBool();
 	}
 	if (values.contains("vblank_frequency")) {
 		bool      ok    = false;

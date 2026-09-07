@@ -268,6 +268,7 @@
     "Could not check for updates:\n%1": "Could not check for updates:\n%1",
     "Could not remove:\n%1": "Could not remove:\n%1",
     "Press a key or mouse button.\nSpace, F1, F7, and F11 are reserved; Esc cancels.": "Press a key or mouse button.\nSpace, F1, F7, and F11 are reserved; Esc cancels.",
-    "Remove save data for \"%1\"?\n\nThis will delete:\n%2\n\nThis cannot be undone.": "Remove save data for \"%1\"?\n\nThis will delete:\n%2\n\nThis cannot be undone."
+    "Remove save data for \"%1\"?\n\nThis will delete:\n%2\n\nThis cannot be undone.": "Remove save data for \"%1\"?\n\nThis will delete:\n%2\n\nThis cannot be undone.",
+    "Enable readback": "Enable readback"
   }
 }

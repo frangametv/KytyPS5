@@ -795,7 +795,8 @@ void TestSampleAdjustSamplerScratch() {
   auto *join = phi_fixture.AddBlock();
   left->AddBranch(join);
   right->AddBranch(join);
-  const auto phi_active = phi_fixture.Emit(ValueOpcode::WqmMask, {Value(true)}, 0, left);
+  const auto phi_active = phi_fixture.Emit(ValueOpcode::IEqual32,
+      {phi_fixture.Emit(ValueOpcode::LaneId, {}, 0, left), Value(0u)}, 0, left);
   const auto phi_lane = phi_fixture.Emit(ValueOpcode::SelectU32,
                                          {phi_active, Value(1u), Value(0u)}, 0, left);
   const auto phi_scratch = phi_fixture.Emit(

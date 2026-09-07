@@ -268,6 +268,7 @@
     "Could not check for updates:\n%1": "Impossibile controllare gli aggiornamenti:\n%1",
     "Could not remove:\n%1": "Impossibile eliminare:\n%1",
     "Press a key or mouse button.\nSpace, F1, F7, and F11 are reserved; Esc cancels.": "Premi un tasto o un pulsante del mouse.\nSpazio, F1, F7 e F11 sono riservati; Esc annulla.",
-    "Remove save data for \"%1\"?\n\nThis will delete:\n%2\n\nThis cannot be undone.": "Eliminare i salvataggi di \"%1\"?\n\nVerranno eliminati:\n%2\n\nNon è possibile annullare questa operazione."
+    "Remove save data for \"%1\"?\n\nThis will delete:\n%2\n\nThis cannot be undone.": "Eliminare i salvataggi di \"%1\"?\n\nVerranno eliminati:\n%2\n\nNon è possibile annullare questa operazione.",
+    "Enable readback": "Abilita readback"
   }
 }
