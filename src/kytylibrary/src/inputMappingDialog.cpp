@@ -268,6 +268,8 @@ InputMappingDialog::InputMappingDialog(const QStringList& mapping, QWidget* pare
 	layout->addLayout(controls);
 
 	auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+	buttons->button(QDialogButtonBox::Ok)->setText(tr("OK"));
+	buttons->button(QDialogButtonBox::Cancel)->setText(tr("Cancel"));
 	layout->addWidget(buttons);
 
 	connect(m_bindings, &QTreeWidget::itemDoubleClicked, this,
@@ -341,7 +343,7 @@ void InputMappingDialog::SetBinding(QTreeWidgetItem* item, const QString& bindin
 		return;
 	}
 	item->setData(BINDING_COLUMN, Qt::UserRole, binding);
-	item->setText(BINDING_COLUMN, binding.isEmpty() ? tr("None") : binding);
+	item->setText(BINDING_COLUMN, binding.isEmpty() ? tr("None") : tr(qPrintable(binding)));
 	UpdateButtons();
 }
 

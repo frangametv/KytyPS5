@@ -140,7 +140,7 @@ void LibraryController::Initialize(const QString& executablePath) {
 		const auto lines = QString::fromUtf8(m_probe.readAllStandardOutput())
 		                       .split(QRegularExpression("[\\r\\n]"), Qt::SkipEmptyParts);
 		m_ready          = code == 0 && exit == QProcess::NormalExit && !lines.isEmpty();
-		m_status         = m_ready ? "Ready" : "Emulator check failed";
+		m_status         = m_ready ? "Emulator ready" : "Emulator check failed";
 		if (!m_ready) Note(m_status + ". Check the emulator installation.");
 		emit stateChanged();
 		if (m_ready && CheckUpdates() && !QCoreApplication::arguments().contains("--local"))

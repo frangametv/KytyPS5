@@ -1,6 +1,7 @@
 #include "trophyViewerDialog.h"
 
 #include "configuration.h"
+#include "uiTranslations.h"
 
 #include <QAbstractItemView>
 #include <QBrush>
@@ -346,8 +347,18 @@ static bool BuildTrophySet(const QString& ucp_file, TrophySet& set, QString& err
 
 	const auto default_language =
 	    JsonString(tropconf.value(QStringLiteral("defaultLanguage"))).trimmed();
-	const QByteArray* meta_data = nullptr;
-	if (!default_language.isEmpty()) {
+	const auto language = UiTranslations::Instance().Language().toLower().replace('_', '-');
+	const QByteArray* meta_data = FindFile(files, QStringLiteral("tropmeta_%1.json").arg(language));
+	if (meta_data == nullptr) {
+		const auto base_language = language.section('-', 0, 0);
+		const auto prefix = QStringLiteral("tropmeta_%1-").arg(base_language);
+		meta_data = FindFile(files, QStringLiteral("tropmeta_%1.json").arg(base_language));
+		for (auto it = files.cbegin(); meta_data == nullptr && it != files.cend(); ++it) {
+			if (it.key().startsWith(prefix) && it.key().endsWith(QStringLiteral(".json")))
+				meta_data = &it.value();
+		}
+	}
+	if (meta_data == nullptr && !default_language.isEmpty()) {
 		meta_data = FindFile(files, QStringLiteral("tropmeta_%1.json").arg(default_language));
 	}
 	if (meta_data == nullptr) {

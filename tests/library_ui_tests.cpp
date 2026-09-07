@@ -1,4 +1,14 @@
 #include "configuration.h"
+#include "inputMappingDialog.h"
+#include "patchesDialog.h"
+#include "trophyViewerDialog.h"
+#include "compatibilityDatabase.h"
+#include <QDialogButtonBox>
+#include <QPushButton>
+#include <QTableWidget>
+#include <QTreeWidget>
+#include <QTimer>
+#include <QtEndian>
 #include "launcherTheme.h"
 #include "libraryController.h"
 #include "librarySettings.h"
@@ -42,6 +52,8 @@ class LibraryTests : public QObject {
 private slots:
   void initTestCase() {
     QVERIFY(m_directory.isValid());
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, m_directory.filePath("user"));
+    QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, m_directory.filePath("system"));
     m_old_directory = QDir::currentPath();
     QVERIFY(QDir::setCurrent(m_directory.path()));
     m_game = m_directory.filePath("Games & spaces/Test title");
@@ -401,6 +413,125 @@ private slots:
     controller->SetUiLanguage("not-a-language");
     QCOMPARE(controller->UiLanguage(), QString("en"));
     window.close();
+  }
+
+  void cheatsCloseSafely() {
+    LibraryController controller(nullptr);
+    controller.selectGame(m_game);
+    QVERIFY(controller.CanPatch());
+    for (bool button : {false, true}) {
+      bool closed = false;
+      QTimer::singleShot(0, [&] {
+        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+        if (!dialog) return;
+        closed = true;
+        if (button) {
+          auto *buttons = dialog->findChild<QDialogButtonBox *>();
+          for (auto *entry : buttons->buttons())
+            if (buttons->buttonRole(entry) == QDialogButtonBox::RejectRole) entry->click();
+        } else dialog->close();
+      });
+      controller.action("patches");
+      QVERIFY(closed);
+      QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    }
+  }
+  void userSettingsSurviveRestart() {
+    QVERIFY(QFile::rename("Kyty.ini", "portable-backup.ini"));
+    QString savedPath;
+    {
+      LibraryController controller(nullptr);
+      savedPath = controller.SettingsFile();
+      QVERIFY(savedPath.startsWith(m_directory.filePath("user")));
+      controller.SetUiLanguage("it");
+      QVERIFY(controller.saveSettings(true, {{"console_language", 5}, {"user_name", "Persistence test"}}).isEmpty());
+    }
+    UiTranslations::Instance().SetLanguage("en");
+    {
+      LibraryController restored(nullptr);
+      QCOMPARE(restored.SettingsFile(), savedPath);
+      QCOMPARE(restored.UiLanguage(), QString("it"));
+      QVariantMap values;
+      for (const auto &field : restored.settings(true))
+        values.insert(field.toMap()["key"].toString(), field.toMap()["value"]);
+      QCOMPARE(values["console_language"].toInt(), 5);
+      QCOMPARE(values["user_name"].toString(), QString("Persistence test"));
+    }
+    QVERIFY(QFile::rename("portable-backup.ini", "Kyty.ini"));
+    UiTranslations::Instance().SetLanguage("en");
+  }
+  void translatedControlsKeepBindingTokens() {
+    UiTranslations::Instance().SetLanguage("it");
+    const QStringList mapping{"Up=Up", "L3=Left Shift", "Circle=Mouse:Right"};
+    InputMappingDialog dialog(mapping);
+    auto *tree = dialog.findChild<QTreeWidget *>();
+    QVERIFY(tree);
+    QCOMPARE(tree->topLevelItem(0)->text(0), QString("Croce direzionale: su"));
+    QCOMPARE(tree->topLevelItem(0)->text(1), QString("Freccia su"));
+    auto actual = dialog.Mapping();
+    auto expected = mapping;
+    actual.sort(); expected.sort();
+    QCOMPARE(actual, expected);
+    UiTranslations::Instance().SetLanguage("en");
+  }
+  void compatibilityUpdatesGameStatus() {
+    QFile file("compatibility_db.json");
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"({"PPSA00001":{"status":"InGame","comment":"Test report","platforms":{"windows":{"status":"InGame"}}}})");
+    file.close();
+    {
+      LibraryController controller(nullptr);
+      controller.selectGame(m_game);
+      QCOMPARE(controller.Selected()["status"].toString(), QString("In game"));
+      QCOMPARE(controller.Selected()["comment"].toString(), QString("Test report"));
+    }
+    QVERIFY(file.remove());
+  }
+  void localizedTrophyMetadata() {
+    const auto folder = m_directory.filePath("trophy-fixture/sce_sys/trophy2");
+    QVERIFY(QDir().mkpath(folder));
+    for (bool italianAvailable : {true, false}) {
+      QList<QPair<QByteArray, QByteArray>> files{
+        {"tropconf.json", R"({"defaultLanguage":"en-US","trophies":[{"id":0,"grade":"B"}]})"},
+        {"tropmeta_en-US.json", R"({"metadata":{"trophyMetadata":[{"id":0,"name":"First step","detail":"Start the game"}]}})"}
+      };
+      if (italianAvailable)
+        files.append(QPair<QByteArray, QByteArray>{"tropmeta_it-IT.json", R"({"metadata":{"trophyMetadata":[{"id":0,"name":"Primo passo","detail":"Avvia il gioco"}]}})"});
+      QByteArray data(0x60 + files.size() * 0x40, '\0');
+      qToBigEndian<quint32>(0xb228c60a, data.data());
+      qToBigEndian<quint32>(1, data.data() + 4);
+      qToBigEndian<quint32>(files.size(), data.data() + 0x10);
+      qToBigEndian<quint32>(0x40, data.data() + 0x14);
+      for (int i = 0; i < files.size(); ++i) {
+        const auto offset = 0x60 + i * 0x40;
+        data.replace(offset, files[i].first.size(), files[i].first);
+        qToBigEndian<quint64>(data.size(), data.data() + offset + 0x20);
+        qToBigEndian<quint64>(files[i].second.size(), data.data() + offset + 0x28);
+        data.append(files[i].second);
+      }
+      qToBigEndian<quint64>(data.size(), data.data() + 8);
+      QFile package(folder + "/trophy00.ucp");
+      QVERIFY(package.open(QIODevice::WriteOnly));
+      QCOMPARE(package.write(data), data.size());
+      package.close();
+      UiTranslations::Instance().SetLanguage("it");
+      QString name, detail;
+      QTimer::singleShot(0, [&] {
+        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+        if (!dialog) return;
+        auto *table = dialog->findChild<QTableWidget *>();
+        if (table && table->rowCount()) {
+          name = table->item(0, 2)->text(); detail = table->item(0, 3)->text();
+        }
+        dialog->reject();
+      });
+      Configuration info;
+      info.basedir = m_directory.filePath("trophy-fixture");
+      TrophyViewerDialog::ShowForGame(&info, nullptr);
+      QCOMPARE(name, italianAvailable ? QString("Primo passo") : QString("First step"));
+      QCOMPARE(detail, italianAvailable ? QString("Avvia il gioco") : QString("Start the game"));
+    }
+    UiTranslations::Instance().SetLanguage("en");
   }
   void cleanupTestCase() { QVERIFY(QDir::setCurrent(m_old_directory)); }
 };

@@ -288,13 +288,8 @@ void ConfigurationListWidget::WriteSettings() {
 	if (file.exists()) {
 		s = std::make_unique<QSettings>(CONF_FILE_NAME, QSettings::IniFormat);
 	} else {
-#ifdef __linux__
 		s = std::make_unique<QSettings>(QSettings::IniFormat, QSettings::UserScope, CONF_ORG_NAME,
 		                                CONF_APP_NAME);
-#else
-		s = std::make_unique<QSettings>(QSettings::IniFormat, QSettings::SystemScope, CONF_ORG_NAME,
-		                                CONF_APP_NAME);
-#endif
 	}
 
 	MainDialog::WriteSettings(*s);
@@ -319,6 +314,12 @@ void ConfigurationListWidget::WriteSettings() {
 		it.value()->WriteSettings(s.get());
 	}
 	s->endArray();
+	s->sync();
+	if (s->status() != QSettings::NoError) {
+		QMessageBox::warning(this, tr("Cannot save settings"),
+		                     tr("Could not save settings to %1. Check that the folder is writable.")
+		                         .arg(QDir::toNativeSeparators(s->fileName())));
+	}
 }
 
 void ConfigurationListWidget::ReadSettings() {
@@ -327,13 +328,8 @@ void ConfigurationListWidget::ReadSettings() {
 	if (file.exists()) {
 		s = std::make_unique<QSettings>(CONF_FILE_NAME, QSettings::IniFormat);
 	} else {
-#ifdef __linux__
 		s = std::make_unique<QSettings>(QSettings::IniFormat, QSettings::UserScope, CONF_ORG_NAME,
 		                                CONF_APP_NAME);
-#else
-		s = std::make_unique<QSettings>(QSettings::IniFormat, QSettings::SystemScope, CONF_ORG_NAME,
-		                                CONF_APP_NAME);
-#endif
 	}
 
 	m_settings_file = s->fileName();
@@ -961,6 +957,7 @@ void ConfigurationListWidget::show_context_menu(const QPoint& pos) {
 	connect(action_patches, &QAction::triggered, this, [this, item]() {
 		if (item != nullptr) {
 			auto* dialog = new PatchesDialog(item->GetInfo(), this);
+			dialog->setAttribute(Qt::WA_DeleteOnClose);
 			dialog->show();
 		}
 	});

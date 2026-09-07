@@ -292,7 +292,7 @@ Rectangle {
                                     model: [root.game.titleId || "Unknown title ID",
                                             root.game.version ? qsTr("Version %1").arg(root.game.version) : "",
                                             root.game.firmware ? qsTr("Firmware %1").arg(root.game.firmware) : "",
-                                            root.game.status && root.game.status !== "Unknown" ? root.game.status : "",
+                                            root.game.status && root.game.status !== "Unknown" ? qsTr("Compatibility: %1").arg(qsTranslate("Library", root.game.status)) : qsTr("Compatibility: Unknown"),
                                             root.game.custom ? "Custom settings" : ""].filter(x => x.length > 0)
                                     Rectangle {
                                         required property string modelData
