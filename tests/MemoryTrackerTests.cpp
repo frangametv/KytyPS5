@@ -1,3 +1,4 @@
+#include "common/hostException.h"
 #include "common/virtualMemory.h"
 #include "graphics/host_gpu/memoryTracker.h"
 #include "graphics/host_gpu/rangeSet.h"
@@ -21,6 +22,7 @@
 #undef min
 #undef max
 #else
+#include <csignal>
 #include <map>
 #include <sys/mman.h>
 #include <sys/wait.h>
@@ -176,13 +178,10 @@ uint8_t *Allocate(PageManager &manager, uint64_t pages) {
       VirtualAlloc(reinterpret_cast<void *>(base), size,
                    MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
   Check(memory == reinterpret_cast<void *>(base), "fixed VirtualAlloc failed");
-  manager.OnGpuMap(base, size);
   return memory;
 }
 
-void Release(PageManager &manager, uint8_t *memory, uint64_t size) {
-  const auto address = reinterpret_cast<uint64_t>(memory);
-  manager.OnGpuUnmap(address, size);
+void Release(uint8_t *memory) {
   Check(VirtualFree(memory, 0, MEM_RELEASE) != 0, "VirtualFree failed");
 }
 
@@ -269,7 +268,7 @@ void TestConcurrentRegionPublication() {
   second.join();
 
   tracker.UntrackMemory(address, page_size);
-  Release(page_manager, memory, page_size);
+  Release(memory);
   Check(cpu_dirty_results.load(std::memory_order_relaxed) == 2,
         "concurrent region publication lost initial CPU ownership");
 }
@@ -303,7 +302,7 @@ void TestCpuDirtyUpload() {
   Check(tracker.IsRegionCpuModified(address, page_size) && IsWritable(memory),
         "explicit CPU dirtiness did not release write protection");
   tracker.UntrackMemory(address, page_size * 2);
-  Release(page_manager, memory, page_size * 2);
+  Release(memory);
 }
 
 void TestRangeInvalidation() {
@@ -318,7 +317,6 @@ void TestRangeInvalidation() {
   Check(memory == reinterpret_cast<void *>(base),
         "range invalidation allocation failed");
   const auto address = reinterpret_cast<uint64_t>(memory);
-  page_manager.OnGpuMap(address, size);
 
   tracker.ForEachUploadRange(
       address, size, true, [](uint64_t, uint64_t) noexcept {},
@@ -340,7 +338,7 @@ void TestRangeInvalidation() {
   Check(flushes == 1,
         "clean range invalidation unnecessarily requested a GPU flush");
   tracker.UntrackMemory(address, size);
-  Release(page_manager, memory, size);
+  Release(memory);
 }
 
 void TestGpuReacquisitionAfterInvalidation() {
@@ -387,7 +385,7 @@ void TestGpuReacquisitionAfterInvalidation() {
   tracker.UnmarkRegionAsGpuModified(address, page_size);
   tracker.MarkRegionAsCpuModified(address, page_size);
   tracker.UntrackMemory(address, page_size);
-  Release(page_manager, memory, page_size);
+  Release(memory);
 }
 
 void TestGpuDirtyBits() {
@@ -411,7 +409,7 @@ void TestGpuDirtyBits() {
         "GPU dirty state did not restore write-only tracking");
   tracker.MarkRegionAsCpuModified(address, page_size);
   tracker.UntrackMemory(address, page_size * 2);
-  Release(page_manager, memory, page_size * 2);
+  Release(memory);
 }
 
 void TestExactDirtyIntervalsSharingTrackerPage() {
@@ -456,7 +454,7 @@ void TestExactDirtyIntervalsSharingTrackerPage() {
         "draining the final exact interval did not release its tracker page");
 
   tracker.UntrackMemory(address, page_size);
-  Release(page_manager, memory, page_size);
+  Release(memory);
 }
 
 void TestGpuDownloadProtectionMirrors() {
@@ -529,7 +527,7 @@ void TestGpuDownloadProtectionMirrors() {
       "CPU-dirty transition did not release only its write watcher");
 
   tracker.UntrackMemory(address, page_size * 4);
-  Release(page_manager, memory, page_size * 4);
+  Release(memory);
 }
 
 void TestCrossRegionUpload() {
@@ -545,7 +543,6 @@ void TestCrossRegionUpload() {
   Check(memory == reinterpret_cast<void *>(base), "fixed VirtualAlloc failed");
   const auto address = reinterpret_cast<uint64_t>(memory);
   const auto boundary = (address + region_size - 1) & ~(region_size - 1);
-  page_manager.OnGpuMap(address, region_size * 2);
   uint32_t ranges = 0;
   tracker.ForEachUploadRange(
       boundary - page_size, page_size * 2, false,
@@ -557,7 +554,7 @@ void TestCrossRegionUpload() {
         "cross-region upload did not clear and protect both regions");
   tracker.MarkRegionAsCpuModified(boundary - page_size, page_size * 2);
   tracker.UntrackMemory(address, region_size * 2);
-  Release(page_manager, memory, region_size * 2);
+  Release(memory);
 }
 
 void TestUploadDoesNotSerializeDisjointRegion() {
@@ -607,7 +604,7 @@ void TestUploadDoesNotSerializeDisjointRegion() {
   tracker.UnmarkRegionAsGpuModified(allocation_base, page_size);
   tracker.MarkRegionAsCpuModified(allocation_base, page_size);
   tracker.UntrackMemory(allocation_base, region_size * 2);
-  Release(page_manager, memory, region_size * 2);
+  Release(memory);
   Check(completed_while_upload_blocked &&
             query_result.load(std::memory_order_relaxed),
         "upload callback serialized an unrelated tracker region");
@@ -663,7 +660,7 @@ void TestDownloadDoesNotSerializeDisjointRegion() {
   tracker.MarkRegionAsCpuModified(allocation_base, page_size);
   tracker.MarkRegionAsCpuModified(second_region, page_size);
   tracker.UntrackMemory(allocation_base, region_size * 2);
-  Release(page_manager, memory, region_size * 2);
+  Release(memory);
   Check(completed_while_download_blocked && both_gpu_owned,
         "download callback serialized an unrelated tracker region");
 }
@@ -726,7 +723,7 @@ void TestGpuUnmarkUsesRegionMask() {
         "cross-region GPU unmark did not use one update per 4 MiB region");
 
   tracker.UntrackMemory(allocation_base, region_size * 2);
-  Release(page_manager, memory, region_size * 2);
+  Release(memory);
 }
 
 void TestFullRegionGpuUnmarkBatching() {
@@ -767,7 +764,7 @@ void TestFullRegionGpuUnmarkBatching() {
       "full-region GPU unmark did not use one exact 4 MiB protection request");
 
   tracker.UntrackMemory(allocation_base, region_size * 2);
-  Release(page_manager, memory, region_size * 2);
+  Release(memory);
 }
 
 [[noreturn]] void RunDeathCase(const char *name) {
@@ -837,6 +834,68 @@ void TestFatalPaths() {
   }
 }
 
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+void *g_fault_stack = nullptr;
+constexpr size_t FAULT_STACK_SIZE = 64 * 1024;
+volatile sig_atomic_t g_stack_faults = 0;
+
+bool HandleStackFault(const Common::HostException::ExceptionInfo &info) {
+  using namespace Common::HostException;
+  stack_t active_stack{};
+  const auto fault_address = reinterpret_cast<uintptr_t>(g_fault_stack) +
+                             FAULT_STACK_SIZE - sizeof(uintptr_t);
+  if (info.type != ExceptionType::AccessViolation ||
+      info.access_violation_type != AccessViolationType::Write ||
+      info.access_violation_vaddr != fault_address ||
+      ::sigaltstack(nullptr, &active_stack) != 0 ||
+      (active_stack.ss_flags & SS_ONSTACK) == 0) {
+    std::_Exit(1);
+  }
+  g_stack_faults = 1;
+  return ::mprotect(g_fault_stack, FAULT_STACK_SIZE,
+                    PROT_READ | PROT_WRITE) == 0;
+}
+
+// A stack write must fault before any signal frame can use the protected stack.
+__attribute__((naked)) void WriteProtectedStack(void *) {
+  asm volatile("mov %rsp, %rax\n"
+               "mov %rdi, %rsp\n"
+               "push %rax\n"
+               "pop %rsp\n"
+               "ret\n");
+}
+
+void TestFaultOnProtectedStack() {
+  const pid_t pid = ::fork();
+  Check(pid >= 0, "stack fault fork failed");
+  if (pid == 0) {
+    std::thread worker([] {
+      Check(Common::HostException::InitializeThreadSignalStack(),
+            "initialize thread signal stack failed");
+      Check(Common::HostException::InstallHandler(HandleStackFault),
+            "install stack fault handler failed");
+      g_fault_stack = ::mmap(nullptr, FAULT_STACK_SIZE, PROT_READ,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+      Check(g_fault_stack != MAP_FAILED, "allocate protected stack failed");
+      WriteProtectedStack(static_cast<char *>(g_fault_stack) + FAULT_STACK_SIZE);
+      Check(g_stack_faults == 1, "protected stack write did not resume");
+      struct sigaction action{};
+      Check(::sigaction(SIGSEGV, nullptr, &action) == 0 &&
+                action.sa_handler != SIG_DFL,
+            "stack fault reset the process handler");
+      Check(::munmap(g_fault_stack, FAULT_STACK_SIZE) == 0,
+            "release protected stack failed");
+    });
+    worker.join();
+    std::_Exit(0);
+  }
+  int status = 0;
+  Check(::waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+            WEXITSTATUS(status) == 0,
+        "fault on a protected stack did not recover");
+}
+#endif
+
 } // namespace
 
 namespace Libs::LibKernel::Memory {
@@ -868,6 +927,9 @@ int main(int argc, char **argv) {
   TestGpuUnmarkUsesRegionMask();
   TestFullRegionGpuUnmarkBatching();
   TestFatalPaths();
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+  TestFaultOnProtectedStack();
+#endif
   std::puts("MemoryTrackerTests: all cases passed");
   return 0;
 }

@@ -126,7 +126,7 @@ uint32_t EmitSubgroupLocalInvocationId(EmitterState& state) {
 	const auto value = state.builder.AllocateId();
 	state.builder.AddFunction(
 	    {OpLoad, TypeU32(state), value, state.subgroup_local_invocation_id_variable});
-	return value;
+	return state.lane_half == 0 ? value : EmitAddU32(state, value, ConstantU32(state, 32));
 }
 
 uint32_t InputVariableForKind(const EmitterState& state, IR::StageInputKind kind) {
@@ -167,25 +167,18 @@ uint32_t EmitLocalInvocationIndex(EmitterState& state) {
 	}
 	const auto value = state.builder.AllocateId();
 	state.builder.AddFunction({OpLoad, TypeU32(state), value, variable});
-	return value;
-}
-
-uint32_t VertexInputDefaultComponentU32(EmitterState& state, VertexInputScalarKind kind,
-                                        uint32_t component) {
-	if ((component & 3u) != 3u) {
-		return ConstantU32(state, 0);
+	if (state.lane_count == 2) {
+		const auto wave_base = EmitBinaryU32(state, OpBitwiseAnd, value, ConstantU32(state, ~31u));
+		return EmitAddU32(state, EmitAddU32(state, value, wave_base),
+		                  ConstantU32(state, state.lane_half * 32));
 	}
-	return ConstantU32(state, kind == VertexInputScalarKind::Float ? 0x3f800000u : 1u);
+	return value;
 }
 
 uint32_t EmitVertexParameterComponentU32(EmitterState& state, const InputBinding& input,
                                          uint32_t component) {
-	const auto count = VertexParameterComponentCount(state, input);
+	const auto count = VertexParameterComponentCount(input);
 	const auto kind  = VertexParameterScalarKind(state, input.location);
-	if (component >= count) {
-		return VertexInputDefaultComponentU32(state, kind, component);
-	}
-
 	const auto scalar_type = VertexParameterScalarType(state, kind);
 	uint32_t   raw         = state.builder.AllocateId();
 	if (count == 1u) {

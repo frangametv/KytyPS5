@@ -1160,9 +1160,16 @@ bool HasLinearPathToTerminal(const Graph& graph, uint32_t start) {
 bool IsEnclosingLinearExit(const Graph& graph, uint32_t header, uint32_t block_id) {
 	// AGC commonly lowers nested early returns through a terminal epilogue shared with an
 	// enclosing conditional. Such a path is an exit boundary, not part of the inner selection.
+	if (!HasLinearPathToTerminal(graph, block_id)) {
+		return false;
+	}
 	const auto* block = graph.FindBlock(block_id);
-	if (block == nullptr || graph.Dominates(header, block_id) ||
-	    !HasLinearPathToTerminal(graph, block_id) || block->predecessors.empty()) {
+	while (block != nullptr && graph.Dominates(header, block->id) &&
+	       block->successors.size() == 1u) {
+		block = graph.FindBlock(block->successors.front());
+	}
+	if (block == nullptr || graph.Dominates(header, block->id) ||
+	    block->predecessors.empty()) {
 		return false;
 	}
 	return std::ranges::all_of(block->predecessors, [&](uint32_t predecessor) {
@@ -1199,13 +1206,33 @@ uint32_t FindSelectionMerge(const Graph& graph, const BasicBlock& block) {
 		const auto* global_block = graph.FindBlock(global_merge);
 		const auto  true_target  = block.terminator.true_block;
 		const auto  false_target = block.terminator.false_block;
-		if (global_block != nullptr && global_block->successors.empty()) {
+		if (global_block == nullptr || global_block->successors.empty()) {
 			const bool false_reaches_true =
 			    CanReachBefore(graph, false_target, true_target, global_merge);
 			const bool true_reaches_false =
 			    CanReachBefore(graph, true_target, false_target, global_merge);
 			if (false_reaches_true != true_reaches_false) {
 				return false_reaches_true ? true_target : false_target;
+			}
+			if (global_merge == UINT32_MAX) {
+				// An enclosing selection's shared return needs its own inner merge
+				// gateway; the other arm can return directly without joining live state.
+				if (IsEnclosingLinearExit(graph, block.id, true_target)) {
+					return true_target;
+				}
+				if (IsEnclosingLinearExit(graph, block.id, false_target)) {
+					return false_target;
+				}
+				// A return can leave a selection without reaching its merge. Keep the
+				// continuing arm as the merge instead of joining live state with a return.
+				if (graph.Dominates(block.id, false_target) &&
+				    HasLinearPathToTerminal(graph, true_target)) {
+					return false_target;
+				}
+				if (graph.Dominates(block.id, true_target) &&
+				    HasLinearPathToTerminal(graph, false_target)) {
+					return true_target;
+				}
 			}
 		}
 		return global_merge;
@@ -1341,7 +1368,7 @@ bool IsolateSemanticLoopHeaders(Graph& graph) {
 
 		// SPIR-V requires OpLoopMerge and its branch to remain in the loop header's
 		// physical block. Keep that header as a dedicated control node, exactly like
-		// the separate Loop node in shadPS4's structured AST. Guest instructions live
+		// a separate Loop node in a structured AST. Guest instructions live
 		// in the body so later translation may introduce bounds/EXEC control flow without
 		// displacing OpLoopMerge into a helper-created block.
 		if (!IsolateSemanticLoopHeader(graph, loop->header)) {
@@ -1427,24 +1454,19 @@ std::vector<uint32_t> SelectionRegion(const Graph& graph, const BasicBlock& head
 	std::vector<uint32_t> region;
 	std::vector<uint32_t> pending = {header.terminator.true_block, header.terminator.false_block};
 	const auto*           loop    = FindInnermostContainingLoop(graph, header.id);
-	const auto global_merge = graph.FindNearestCommonPostDominator(header.terminator.true_block,
-	                                                               header.terminator.false_block);
 	while (!pending.empty()) {
 		const auto block_id = pending.back();
 		pending.pop_back();
 		if (block_id == merge || Contains(region, block_id) ||
-		    (loop != nullptr && (block_id == loop->merge || block_id == loop->continue_block)) ||
-		    IsEnclosingLinearExit(graph, header.id, block_id) ||
-		    (block_id == global_merge && HasLinearPathToTerminal(graph, block_id))) {
+		    (loop != nullptr && (block_id == loop->merge || block_id == loop->continue_block))) {
 			continue;
 		}
 		const auto* block = graph.FindBlock(block_id);
 		if (block == nullptr) {
 			continue;
 		}
-		if (block->successors.empty()) {
-			continue;
-		}
+		// A return terminates its own block; a branch to a shared return still has to
+		// obey selection entry/exit rules, just like any other branch.
 		AddUnique(region, block_id);
 		pending.insert(pending.end(), block->successors.begin(), block->successors.end());
 	}
@@ -1691,7 +1713,8 @@ void AppendEnclosingRouteBlocks(Graph& graph, uint32_t original_block_count,
 		for (uint32_t candidate = 0; candidate < original_block_count; candidate++) {
 			const auto* candidate_block = graph.FindBlock(candidate);
 			if (candidate_block == nullptr ||
-			    candidate_block->terminator.kind != TerminatorKind::ConditionalBranch) {
+			    candidate_block->terminator.kind != TerminatorKind::ConditionalBranch ||
+			    IsInnermostLoopControlConditional(graph, *candidate_block)) {
 				continue;
 			}
 			const auto candidate_true  = candidate_block->terminator.true_block;
@@ -1725,11 +1748,15 @@ void AppendEnclosingRouteBlocks(Graph& graph, uint32_t original_block_count,
 
 // Turn H0 -> shared/H1, H1 -> shared/other into nested selections whose empty
 // forwarding blocks set one typed SSA route value. Guest semantic blocks remain unique.
+// Preserve loop-control branches just as SplitOneSelectionMerge does. Moving a loop
+// exit through the route selector can create an inner cycle whose merge is also the
+// enclosing loop merge, so splitting that shared exit can never separate the loops.
 bool RouteOneSharedArm(Graph& graph, uint32_t original_block_count, uint32_t outer_id,
                        uint32_t route_variable, GotoRouteBlocks& route) {
 	auto* outer = graph.FindBlock(outer_id);
 	if (outer == nullptr || outer->inst_begin == outer->inst_end ||
-	    outer->terminator.kind != TerminatorKind::ConditionalBranch) {
+	    outer->terminator.kind != TerminatorKind::ConditionalBranch ||
+	    IsInnermostLoopControlConditional(graph, *outer)) {
 		return false;
 	}
 
@@ -1741,7 +1768,8 @@ bool RouteOneSharedArm(Graph& graph, uint32_t original_block_count, uint32_t out
 		const auto* inner = graph.FindBlock(inner_id);
 		if (inner == nullptr || inner->inst_begin == inner->inst_end ||
 		    inner->predecessors != std::vector<uint32_t> {outer_id} ||
-		    inner->terminator.kind != TerminatorKind::ConditionalBranch) {
+		    inner->terminator.kind != TerminatorKind::ConditionalBranch ||
+		    IsInnermostLoopControlConditional(graph, *inner)) {
 			continue;
 		}
 
@@ -1755,8 +1783,7 @@ bool RouteOneSharedArm(Graph& graph, uint32_t original_block_count, uint32_t out
 			}
 			const auto first_arm = std::min(shared, other);
 			if (first_arm >= original_block_count || outer_id >= inner_id ||
-			    inner_id >= first_arm ||
-			    graph.FindNearestCommonPostDominator(shared, other) == UINT32_MAX) {
+			    inner_id >= first_arm) {
 				continue;
 			}
 
@@ -1819,8 +1846,7 @@ bool RouteOneSharedArm(Graph& graph, uint32_t original_block_count, uint32_t out
 			const auto first_arm = std::min(continuation, other);
 			if (outer_predecessors.empty() || inner_predecessors.empty() ||
 			    external_predecessor || first_arm >= original_block_count ||
-			    outer_id >= inner_id || inner_id >= first_arm ||
-			    graph.FindNearestCommonPostDominator(continuation, other) == UINT32_MAX) {
+			    outer_id >= inner_id || inner_id >= first_arm) {
 				continue;
 			}
 
@@ -1999,9 +2025,7 @@ Graph BuildGraph(const Decoder::Program& program) {
 		const auto& last    = program.instructions[block.inst_end - 1u];
 		const auto  next_pc = InstructionEndPc(last);
 		if (last.opcode == Opcode::S_ENDPGM) {
-			block.terminator.kind       = TerminatorKind::Branch;
-			block.terminator.condition  = BranchCondition::Always;
-			block.terminator.true_block = pc_to_block.at(end_pc);
+			block.terminator.kind = TerminatorKind::Return;
 		} else if (last.opcode == Opcode::S_SETPC_B64) {
 			const auto& target_info = setpc_targets.at(last.pc);
 			if (target_info.indirect) {

@@ -195,7 +195,8 @@ private:
 	                         bool primitive_restart_enable, bool log_pipeline_phase,
 	                         bool set_bind_debug, bool set_auto_debug);
 	[[nodiscard]] RenderState AcquireRenderTargets(CommandBuffer& buffer, RenderColorInfo* colors,
-	                                               uint32_t color_count, RenderDepthInfo& depth);
+	                                               uint32_t color_count, RenderDepthInfo& depth,
+	                                               const std::optional<PreparedBindings>& pixel = std::nullopt);
 	[[nodiscard]] bool        ResolveColorTargets(uint64_t submit_id, CommandBuffer& buffer,
 	                                              uint32_t render_target_slice_offset);
 	void                      BindImage(ImageId id, bool storage);
@@ -204,6 +205,9 @@ private:
 	void                      ResetBindings();
 	[[nodiscard]] bool        TryConsumeComputeMetaClear(const ShaderComputeInputInfo& input,
 	                                                     const CommandBuffer&          buffer);
+	[[nodiscard]] bool TryConsumeComputeImageClear(const ShaderComputeInputInfo& input,
+	                                              CommandBuffer& command, uint32_t group_x,
+	                                              uint32_t group_y, uint32_t group_z, uint32_t mode);
 
 	RenderContext&                        m_context;
 	std::vector<ImageId>                  m_bound_images;
@@ -216,7 +220,7 @@ private:
 	friend struct RenderExecutorTestAccess;
 };
 
-[[nodiscard]] bool ResolveComputeImageClear(const ShaderComputeInputInfo& input, uint32_t group_x,
+[[nodiscard]] bool ResolveComputeBufferFill(const ShaderComputeInputInfo& input, uint32_t group_x,
                                             uint32_t group_y, uint32_t group_z, uint32_t mode,
                                             ShaderBufferResource& descriptor,
                                             uint32_t& packed_clear, uint64_t& size);

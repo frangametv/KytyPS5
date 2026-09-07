@@ -38,6 +38,7 @@ constexpr OpcodeMap SOP2_OPCODE_LIST[] = {
 constexpr OpcodeMap SOP1_OPCODE_LIST[] = {
     {0x03u, Opcode::S_MOV_B32},
     {0x04u, Opcode::S_MOV_B64},
+    {0x06u, Opcode::S_CMOV_B64},
     {0x07u, Opcode::S_NOT_B32},
     {0x08u, Opcode::S_NOT_B64},
     {0x0au, Opcode::S_WQM_B64},
@@ -188,7 +189,9 @@ void DecodeSopk(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index
 	const uint32_t word   = code[word_index];
 	const uint32_t opcode = (word >> 23u) & 0x1fu;
 	const uint32_t sdst   = (word >> 16u) & 0x7fu;
-	const auto     imm    = static_cast<int16_t>(word & 0xffffu);
+	const auto     imm    = opcode >= 0x09u && opcode <= 0x0eu
+	                           ? static_cast<int32_t>(word & 0xffffu)
+	                           : static_cast<int32_t>(static_cast<int16_t>(word & 0xffffu));
 
 	inst.pc              = pc;
 	inst.word            = word;

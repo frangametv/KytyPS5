@@ -28,17 +28,23 @@ void Translator::S_SAVEEXEC(const Decoder::Instruction& inst, IR::ValueOpcode op
 	const auto src    = ReadMask(inst.src0);
 	const auto lhs    = negate_exec ? ir.LogicalNot(old) : old;
 	const auto rhs    = negate_source ? ir.LogicalNot(src) : src;
-	const auto result = IR::U1(ir.Emit(operation, {lhs, rhs}));
+	auto       result = IR::U1(ir.Emit(operation, {lhs, rhs}));
 	if (write_64) {
-		WriteMask64(inst.dst, old);
+		WriteMask(inst.dst, old, true);
 	} else {
-		WriteMask(inst.dst, old);
+		WriteRawU32(inst.dst, ir.GetExecLo());
+		if (current_wave_size == 64u) {
+			const auto low_half =
+			    ir.ULessThan(IR::U32(ir.Emit(IR::ValueOpcode::LaneId)), IR::U32(IR::Value(32u)));
+			result = IR::U1(ir.Emit(IR::ValueOpcode::SelectU1, {low_half, result, old}));
+		}
 	}
 	const auto mask = BallotMask(result);
 	ir.SetExec(result);
 	ir.SetExecLo(mask[0]);
 	ir.SetExecHi(mask[1]);
-	ir.SetScc(result);
+	ir.SetScc(
+	    ir.INotEqual(write_64 ? ir.BitwiseOr(mask[0], mask[1]) : mask[0], IR::U32(IR::Value(0u))));
 }
 
 void Translator::ADD_U32(const Decoder::Instruction& inst, bool vector, bool use_carry_in) {
@@ -149,8 +155,13 @@ void Translator::S_BARRIER() {
 	ir.Emit(IR::ValueOpcode::Barrier);
 }
 
-void Translator::S_SENDMSG() {
-	ir.Emit(IR::ValueOpcode::Sendmsg);
+void Translator::S_SENDMSG(const Decoder::Instruction& inst) {
+	if (program.stage == ShaderType::Mesh) {
+		EXIT_NOT_IMPLEMENTED(inst.src0.value != 9u); // MSG_GS_ALLOC_REQ
+		ir.Emit(IR::ValueOpcode::MeshAllocate, {ir.GetM0()});
+	} else {
+		ir.Emit(IR::ValueOpcode::Sendmsg);
+	}
 }
 
 void Translator::S_TTRACEDATA() {
@@ -197,17 +208,18 @@ void Translator::S_CSELECT_B32(const Decoder::Instruction& inst) {
 	WriteOperand(DestinationOperand(inst), result);
 }
 
-void Translator::S_CSELECT_B64(const Decoder::Instruction& inst) {
+void Translator::ScalarSelect64(const Decoder::Instruction& inst,
+                                 const Decoder::Operand& false_source) {
 	const auto condition     = ir.GetScc();
 	const auto lhs           = ReadU32Pair(inst.src0);
-	const auto rhs           = ReadU32Pair(inst.src1);
+	const auto rhs           = ReadU32Pair(false_source);
 	const auto selected_mask = IR::U1(
-	    ir.Emit(IR::ValueOpcode::SelectU1, {condition, ReadMask(inst.src0), ReadMask(inst.src1)}));
+	    ir.Emit(IR::ValueOpcode::SelectU1, {condition, ReadMask(inst.src0), ReadMask(false_source)}));
 	const auto selected_mask_valid =
 	    IR::U1(ir.Emit(IR::ValueOpcode::SelectU1,
-	                   {condition, ReadMaskValid(inst.src0), ReadMaskValid(inst.src1)}));
+	                   {condition, ReadMaskValid(inst.src0), ReadMaskValid(false_source)}));
 	if (IsExecOrVcc(inst.dst)) {
-		WriteMask64(inst.dst, selected_mask);
+		WriteMask(inst.dst, selected_mask, true);
 		return;
 	}
 	WriteU32Pair(inst.dst,
@@ -220,9 +232,7 @@ void Translator::S_CSELECT_B64(const Decoder::Instruction& inst) {
 }
 
 void Translator::MOV_B32(const Decoder::Instruction& inst, bool apply_float_modifiers) {
-	if (IsExecOrVcc(inst.src0) && IsExecOrVcc(inst.dst)) {
-		WriteMask(inst.dst, ReadMask(inst.src0));
-	} else if (apply_float_modifiers && (inst.src0.negate || inst.src0.absolute)) {
+	if (apply_float_modifiers && (inst.src0.negate || inst.src0.absolute)) {
 		WriteOperand(DestinationOperand(inst), ReadOperand(inst.src0, IR::Type::F32));
 	} else {
 		WriteOperand(DestinationOperand(inst), ReadOperand(inst.src0, IR::Type::U32));
@@ -230,50 +240,44 @@ void Translator::MOV_B32(const Decoder::Instruction& inst, bool apply_float_modi
 }
 
 void Translator::S_MOV_B64(const Decoder::Instruction& inst) {
-	if (IsExecOrVcc(inst.dst) || IsExecOrVcc(inst.src0)) {
-		WriteMask64(inst.dst, ReadMask(inst.src0));
-		return;
-	}
-	const bool scalar_copy =
-	    inst.dst.kind == Decoder::OperandKind::Sgpr && inst.src0.kind == Decoder::OperandKind::Sgpr;
+	const bool mask_source = inst.src0.kind == Decoder::OperandKind::Sgpr ||
+	                         inst.src0.kind == Decoder::OperandKind::ExecLo ||
+	                         inst.src0.kind == Decoder::OperandKind::VccLo;
 	IR::U1 source_mask;
 	IR::U1 source_mask_valid;
-	if (scalar_copy) {
-		source_mask       = ir.GetThreadBitScalarReg(static_cast<IR::ScalarReg>(inst.src0.reg));
-		source_mask_valid = ir.GetScalarMaskTag(static_cast<IR::ScalarReg>(inst.src0.reg));
+	if (mask_source) {
+		// A full VCC copy carries its predicate even in wave32; ReadMask also handles
+		// individual 32-bit VCC halves, which cannot preserve that provenance.
+		source_mask = inst.src0.kind == Decoder::OperandKind::VccLo ? ir.GetVcc()
+		                                                          : ReadMask(inst.src0);
+		source_mask_valid = ReadMaskValid(inst.src0);
 	}
+	// Preserve all 64 scalar bits independently of the per-thread predicate.
 	WriteU32Pair(inst.dst, ReadU32Pair(inst.src0));
-	if (scalar_copy) {
-		ir.SetThreadBitScalarReg(static_cast<IR::ScalarReg>(inst.dst.reg), source_mask);
-		ir.SetScalarMaskTag(static_cast<IR::ScalarReg>(inst.dst.reg), source_mask_valid);
+	if (mask_source) {
+		switch (inst.dst.kind) {
+			case Decoder::OperandKind::ExecLo: ir.SetExec(source_mask); break;
+			case Decoder::OperandKind::VccLo: ir.SetVcc(source_mask); break;
+			case Decoder::OperandKind::Sgpr:
+				ir.SetThreadBitScalarReg(static_cast<IR::ScalarReg>(inst.dst.reg), source_mask);
+				ir.SetScalarMaskTag(static_cast<IR::ScalarReg>(inst.dst.reg), source_mask_valid);
+				break;
+			default: break;
+		}
 	}
 }
 
 void Translator::S_WQM_B64(const Decoder::Instruction& inst) {
-	if (!IsExecOrVcc(inst.dst) && !IsExecOrVcc(inst.src0)) {
-		const auto mask_valid = ReadMaskValid(inst.src0);
-		const auto invocation_result =
-		    IR::U1(ir.Emit(IR::ValueOpcode::WqmMask, {ReadMask(inst.src0)}));
-		const auto result =
-		    IR::U64(ir.Emit(IR::ValueOpcode::WqmU64, {ReadOperand(inst.src0, IR::Type::U64)}));
-		WriteOperand(DestinationOperand(inst), result);
-		if (inst.dst.kind == Decoder::OperandKind::Sgpr) {
-			const auto dst = static_cast<IR::ScalarReg>(inst.dst.reg);
-			ir.SetThreadBitScalarReg(dst, invocation_result);
-			ir.SetScalarMaskTag(dst, mask_valid);
-			const auto raw_nonzero =
-			    IR::U1(ir.Emit(IR::ValueOpcode::INotEqual64, {result, IR::Value(uint64_t {0})}));
-			ir.SetScc(IR::U1(
-			    ir.Emit(IR::ValueOpcode::SelectU1, {mask_valid, invocation_result, raw_nonzero})));
-		} else {
-			ir.SetScc(
-			    IR::U1(ir.Emit(IR::ValueOpcode::INotEqual64, {result, IR::Value(uint64_t {0})})));
-		}
-		return;
+	const auto mask_valid  = ReadMaskValid(inst.src0);
+	const auto result =
+	    IR::U64(ir.Emit(IR::ValueOpcode::WqmU64, {ReadOperand(inst.src0, IR::Type::U64)}));
+	WriteOperand(DestinationOperand(inst), result);
+	if (inst.dst.kind == Decoder::OperandKind::Sgpr) {
+		const auto dst = static_cast<IR::ScalarReg>(inst.dst.reg);
+		ir.SetThreadBitScalarReg(dst, ThreadBit(ExtractU64(result)));
+		ir.SetScalarMaskTag(dst, mask_valid);
 	}
-	const auto result = IR::U1(ir.Emit(IR::ValueOpcode::WqmMask, {ReadMask(inst.src0)}));
-	WriteMask64(inst.dst, result);
-	ir.SetScc(result);
+	ir.SetScc(IR::U1(ir.Emit(IR::ValueOpcode::INotEqual64, {result, IR::Value(uint64_t {0})})));
 }
 
 void Translator::V_MOVRELS_B32(const Decoder::Instruction& inst) {
