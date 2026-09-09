@@ -1012,7 +1012,15 @@ static int ConvertMessageFlags(int flags) {
 		host_flags |= MSG_DONTROUTE;
 	}
 	if ((flags & guest_msg_waitall) != 0) {
+#if defined(_WIN32)
+		// Winsock rejects WAITALL combined with PEEK. POSIX permits a short
+		// receive when peeking, so preserve PEEK without the incompatible flag.
+		if ((flags & guest_msg_peek) == 0) {
+			host_flags |= MSG_WAITALL;
+		}
+#else
 		host_flags |= MSG_WAITALL;
+#endif
 	}
 #if !defined(_WIN32)
 	if ((flags & guest_msg_dontwait) != 0) {

@@ -1,3 +1,8 @@
+> Aggiornamento 9 settembre 2026: il successivo merge upstream fino a
+> `0b4e78c` risolve le verifiche depth/stencil e porta la suite CTest a
+> 40/40 test passati. Vedere [il resoconto](upstream-integration-20260909.md).
+> I blocchi di avvio di Astro Bot sotto riportati non sono stati riverificati.
+
 # Astro Bot: handoff dopo il merge RTX di Brandon
 
 Aggiornato: 9 settembre 2026.

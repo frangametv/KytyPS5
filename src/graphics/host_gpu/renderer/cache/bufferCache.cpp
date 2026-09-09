@@ -450,24 +450,22 @@ void BufferCache::ReadMemoryOnGpu(uint64_t vaddr, uint64_t size, bool is_write) 
 		    });
 	    });
 	if (!copies.empty()) {
-		DownloadBufferMemory(copies);
-		// The enumeration covered whole dirty pages and every exact interval on them.
+		std::optional<uint64_t> write_tick = 0;
+		for (const auto& copy: copies) {
+			const auto tick = GpuWriteTick(copy.address, copy.size);
+			if (!tick) {
+				write_tick.reset();
+				break;
+			}
+			write_tick = std::max(*write_tick, *tick);
+		}
+		if (!write_tick || !m_scheduler.IsFree(*write_tick) ||
+		    !TryDownloadRetired(copies, *write_tick)) {
+			DownloadBufferMemory(copies);
+		}
+		// Both download paths cover every dirty interval in the widened window.
 		m_memory_tracker.UnmarkRegionAsGpuModified(window_begin, window_end - window_begin);
 	}
-	std::optional<uint64_t> write_tick = 0;
-	for (const auto& copy: copies) {
-		const auto tick = GpuWriteTick(copy.address, copy.size);
-		if (!tick || !write_tick) {
-			write_tick.reset();
-			break;
-		}
-		write_tick = std::max(*write_tick, *tick);
-	}
-	if (!write_tick || !m_scheduler.IsFree(*write_tick) || !TryDownloadRetired(copies, *write_tick)) {
-		DownloadBufferMemory(copies);
-	}
-	// The enumeration above covered whole dirty pages and every exact interval on them.
-	m_memory_tracker.UnmarkRegionAsGpuModified(vaddr, size);
 	if (is_write) {
 		m_memory_tracker.MarkRegionAsCpuModified(vaddr, size);
 	}
@@ -521,10 +519,12 @@ BufferCache::OverlapResult BufferCache::ResolveOverlaps(uint64_t vaddr, uint64_t
 		end                       = std::max(end, buffer_end);
 		if (!has_stream_leap && (stream_score += buffer.StreamScore()) > StreamLeapThreshold) {
 			has_stream_leap = true;
-			if (expands_right) {
+			// Fix the shadPS4 bug that reserves space opposite to the incoming stream's growth.
+			// The old buffer extending left of the request predicts growth to the right, and vice versa.
+			if (expands_left) {
 				end += std::min(StreamLeapSize, PageTable::kAddressSpaceSize - end);
 			}
-			if (expands_left) {
+			if (expands_right) {
 				const auto minimum = CACHING_PAGESIZE * 2;
 				if (begin > minimum) {
 					begin -= std::min(StreamLeapSize, begin - minimum);
