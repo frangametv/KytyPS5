@@ -149,6 +149,20 @@ bool IsStackPointerRegister(ZydisRegister reg) {
 	       ZydisRegisterGetLargestEnclosing(ZYDIS_MACHINE_MODE_LONG_64, reg) == ZYDIS_REGISTER_RSP;
 }
 
+// Instructions the Intel host raises #UD on; the emulator services them in the exception handler, and
+// the OS writes that frame below rsp, into the guest red zone.
+bool IsHostTrappingInstruction(const ZydisDecodedInstruction& instruction) {
+	switch (instruction.mnemonic) {
+		case ZYDIS_MNEMONIC_EXTRQ:
+		case ZYDIS_MNEMONIC_INSERTQ:
+		case ZYDIS_MNEMONIC_MOVNTSS:
+		case ZYDIS_MNEMONIC_MOVNTSD:
+		case ZYDIS_MNEMONIC_MONITORX:
+		case ZYDIS_MNEMONIC_MWAITX: return true;
+		default: return false;
+	}
+}
+
 bool IsControlFlowTerminator(const ZydisDecodedInstruction& instruction) {
 	return instruction.meta.category == ZYDIS_CATEGORY_UNCOND_BR ||
 	       instruction.meta.category == ZYDIS_CATEGORY_RET ||
@@ -742,7 +756,8 @@ bool GenerateProtectedIndirectCall(const DecodedCodeInstruction& decoded,
 } // namespace
 
 RedZonePatchResult PatchRedZoneMemoryInstructions(u64 segment_addr, u64 segment_size,
-                                                  std::span<const uintptr_t> function_starts) {
+                                                  std::span<const uintptr_t> function_starts,
+                                                  bool                       memory_sites) {
 	RedZonePatchResult result {};
 	auto*              module = GetContainingModule(reinterpret_cast<void*>(segment_addr));
 	if (module == nullptr || function_starts.empty()) {
@@ -781,8 +796,14 @@ RedZonePatchResult PatchRedZoneMemoryInstructions(u64 segment_addr, u64 segment_
 			++result.red_zone_function_count;
 			result.indirect_red_zone_function_count += function.has_indirect_branch;
 			for (const auto& [address, decoded]: function.instructions) {
-				if (!decoded.accesses_memory || !decoded.red_zone_live.any() ||
+				const bool traps = IsHostTrappingInstruction(decoded.instruction);
+				if (!(traps || (memory_sites && decoded.accesses_memory)) || !decoded.red_zone_live.any() ||
 				    rewrite_sites.contains(address)) {
+					continue;
+				}
+				if (traps) {
+					++result.trapping_instruction_count;
+					rewrite_sites[address].protect_red_zone = true;
 					continue;
 				}
 				++result.memory_instruction_count;
@@ -1234,7 +1255,7 @@ RedZonePatchResult PatchRedZoneMemoryInstructions(u64 segment_addr, u64 segment_
 
 #else
 
-RedZonePatchResult PatchRedZoneMemoryInstructions(u64, u64, std::span<const uintptr_t>) {
+RedZonePatchResult PatchRedZoneMemoryInstructions(u64, u64, std::span<const uintptr_t>, bool) {
 	return {};
 }
 

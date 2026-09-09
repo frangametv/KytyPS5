@@ -410,7 +410,7 @@ struct RenderExecutorTestAccess {
     std::vector<vk::DescriptorSetLayoutBinding> layout_bindings;
     bool compute = false;
     for (const auto *prepared : stages) {
-      const auto &program = *prepared->program;
+      const auto &program = *prepared->runtime->program;
       compute |= program.stage == ShaderType::Compute;
       const auto shader_stage = program.stage == ShaderType::Vertex
                                     ? vk::ShaderStageFlagBits::eVertex
@@ -460,7 +460,7 @@ struct RenderExecutorTestAccess {
                                                 PreparedBindings &bindings) {
     std::array<PreparedBindings *, 1> stages{&bindings};
     auto pipeline = CreateDescriptorPipeline(executor, stages);
-    const auto bind_point = bindings.program->stage == ShaderType::Compute
+    const auto bind_point = bindings.runtime->program->stage == ShaderType::Compute
                                 ? vk::PipelineBindPoint::eCompute
                                 : vk::PipelineBindPoint::eGraphics;
     executor.CommitBindings(buffer, bind_point, pipeline, stages);
@@ -498,17 +498,15 @@ struct RenderExecutorTestAccess {
   }
 
   static void ResolveRenderDepthTarget(RenderExecutor &executor,
-                                       uint64_t submit_id,
                                        CommandBuffer &buffer,
                                        RenderDepthInfo &depth) {
-    executor.ResolveRenderDepthTarget(submit_id, buffer, depth);
+    executor.ResolveRenderDepthTarget(buffer, depth);
   }
 
   static void ResolveRenderColorTarget(RenderExecutor &executor,
-                                       uint64_t submit_id,
                                        CommandBuffer &buffer,
                                        RenderColorInfo &color, uint32_t slot) {
-    executor.ResolveRenderColorTarget(submit_id, buffer, color, 0, slot);
+    executor.ResolveRenderColorTarget(buffer, color, 0, slot);
   }
 
   static void BindRenderTarget(RenderExecutor &executor, ImageId id) {
@@ -1764,6 +1762,73 @@ public:
     return Renderer();
   }
 
+  void CheckHostImageAllocation() {
+    constexpr const char *name = "HostImageAllocation";
+    auto &graphics = RuntimeContext();
+    VulkanImage image;
+    vk::ImageCreateInfo create{};
+    create.flags = vk::ImageCreateFlagBits::eMutableFormat;
+    create.imageType = vk::ImageType::e2D;
+    create.format = vk::Format::eR8G8B8A8Unorm;
+    create.extent = {16, 8, 1};
+    create.mipLevels = 3;
+    create.arrayLayers = 4;
+    create.samples = vk::SampleCountFlagBits::e1;
+    create.tiling = vk::ImageTiling::eOptimal;
+    create.usage = vk::ImageUsageFlagBits::eTransferSrc |
+                   vk::ImageUsageFlagBits::eTransferDst |
+                   vk::ImageUsageFlagBits::eSampled;
+    create.initialLayout = vk::ImageLayout::eUndefined;
+
+    for (uint32_t pass = 0; pass < 2; ++pass) {
+      Require(name, "create", graphics.CreateImage(create, image),
+              "could not allocate native image");
+      Require(name, "allocation metadata",
+              image.image != nullptr && image.allocation != nullptr &&
+                  image.format == create.format &&
+                  image.image_type == create.imageType &&
+                  image.extent == create.extent &&
+                  image.layers == create.arrayLayers &&
+                  image.mip_levels == create.mipLevels &&
+                  image.samples == static_cast<uint32_t>(create.samples) &&
+                  image.usage == create.usage && image.flags == create.flags,
+              "native image metadata did not follow its creation descriptor");
+      Require(name, "fresh synchronization state",
+              image.state.layout == create.initialLayout &&
+                  image.state.access_mask == vk::AccessFlags2{} &&
+                  image.state.pl_stage == vk::PipelineStageFlagBits2::eAllCommands &&
+                  image.subresource_states.empty(),
+              "new allocation retained synchronization state from an old image");
+      VkMemoryPropertyFlags properties{};
+      vmaGetAllocationMemoryProperties(graphics.allocator, image.allocation,
+                                       &properties);
+      Require(name, "allocation policy",
+              (properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0,
+              "native image lost its device-local memory requirement");
+
+      // A reused presentation image may still describe its previous recording.
+      // No commands use this fixture; seed that bookkeeping before retirement.
+      image.state = {vk::PipelineStageFlagBits2::eTransfer,
+                     vk::AccessFlagBits2::eTransferWrite,
+                     vk::ImageLayout::eTransferDstOptimal};
+      image.subresource_states.assign(image.layers * image.mip_levels, image.state);
+      graphics.DeleteImage(image);
+      Require(name, "retirement",
+              image.image == nullptr && image.allocation == nullptr,
+              "retired native image retained an allocation handle");
+
+      create.flags = vk::ImageCreateFlagBits::e2DArrayCompatible;
+      create.imageType = vk::ImageType::e3D;
+      create.format = vk::Format::eR32Uint;
+      create.extent = {8, 4, 2};
+      create.mipLevels = 2;
+      create.arrayLayers = 1;
+      create.usage = vk::ImageUsageFlagBits::eTransferSrc |
+                     vk::ImageUsageFlagBits::eTransferDst;
+    }
+    std::printf("[host]    %-32s ok\n", name);
+  }
+
   void CheckDescriptorHeapLargeSet() {
     EnsureRuntimeContext();
     std::array<vk::DescriptorSetLayoutBinding, 3> bindings{};
@@ -1848,15 +1913,12 @@ public:
     pixel_program.bindings.push_data_start_dword = 0;
     pixel_program.bindings.user_data_registers = {0, 1};
     pixel_program.bindings.memory_offset_dword = 2;
-    ShaderRecompiler::IR::ResourceSnapshot snapshot{};
-    PreparedBindings vertex{};
-    vertex.program = &vertex_program;
-    vertex.snapshot = &snapshot;
-    vertex.shader_data = {0x11111111u, 0x22222222u};
-    PreparedBindings pixel{};
-    pixel.program = &pixel_program;
-    pixel.snapshot = &snapshot;
-    pixel.shader_data = {0x33333333u, 0x44444444u};
+    ShaderStageRuntime vertex_runtime{.program = &vertex_program};
+    vertex_runtime.resources.user_data = {0x11111111u, 0x22222222u};
+    ShaderStageRuntime pixel_runtime{.program = &pixel_program};
+    pixel_runtime.resources.user_data = {0x33333333u, 0x44444444u};
+    auto vertex = context.GetRenderExecutor().PrepareBindings(vertex_runtime);
+    auto pixel = context.GetRenderExecutor().PrepareBindings(pixel_runtime);
 
     const auto pipeline = RenderExecutorTestAccess::CommitBindings(
         context.GetRenderExecutor(), scheduler.Current(), vertex, pixel);
@@ -7998,7 +8060,7 @@ public:
 
       RenderColorInfo color{};
       RenderExecutorTestAccess::ResolveRenderColorTarget(
-          executor, 1, scheduler.Current(), color, 0);
+          executor, scheduler.Current(), color, 0);
       const auto attachment =
           texture_cache.FindRenderTarget(color.image_id, color.desc);
       const auto &image = texture_cache.GetImage(color.image_id);
@@ -8100,7 +8162,7 @@ public:
 
       RenderColorInfo color{};
       RenderExecutorTestAccess::ResolveRenderColorTarget(
-          executor, 1, scheduler.Current(), color, 0);
+          executor, scheduler.Current(), color, 0);
       const auto attachment =
           texture_cache.FindRenderTarget(color.image_id, color.desc);
       const auto &image = texture_cache.GetImage(color.image_id);
@@ -8133,7 +8195,7 @@ public:
           0, {.base_array_slice_index = 7, .last_array_slice_index = 7});
       RenderColorInfo sliced_color{};
       RenderExecutorTestAccess::ResolveRenderColorTarget(
-          executor, 2, scheduler.Current(), sliced_color, 0);
+          executor, scheduler.Current(), sliced_color, 0);
       RenderDepthInfo no_depth{};
       const auto sliced_rendering =
           RenderExecutorTestAccess::AcquireRenderTargets(
@@ -8163,14 +8225,16 @@ public:
       const auto storage_view =
           texture_cache.FindTexture(storage_id, storage_desc);
       const auto &shared_image = texture_cache.GetImage(storage_id);
+      // Both attachment slices were materialized above; a storage alias must not
+      // restore their deferred DCC clear bits.
       Require(name, "storage alias reuse",
               storage_id == color.image_id && storage_view != nullptr &&
                   shared_image.IsGpuModified() &&
                   shared_image.usage.render_target &&
                   !texture_cache.IsMetaCleared(dcc_address, 0) &&
-                  texture_cache.IsMetaCleared(dcc_address, 7),
+                  !texture_cache.IsMetaCleared(dcc_address, 7),
               "the matching 3D storage binding did not reuse the live "
-              "render-target image or materialize its pending clear");
+              "render-target image or preserve its consumed clear state");
 
       Require(
           name, "volume readback queue",
@@ -8221,7 +8285,7 @@ public:
                                    .last_array_slice_index = 32});
         RenderColorInfo volume_color{};
         RenderExecutorTestAccess::ResolveRenderColorTarget(
-            executor, 3, scheduler.Current(), volume_color, 0);
+            executor, scheduler.Current(), volume_color, 0);
         const auto volume_rendering =
             RenderExecutorTestAccess::AcquireRenderTargets(
                 executor, scheduler.Current(), &volume_color, 1, no_depth);
@@ -8357,7 +8421,7 @@ public:
 
       RenderColorInfo color{};
       RenderExecutorTestAccess::ResolveRenderColorTarget(
-          executor, 1, scheduler.Current(), color, 0);
+          executor, scheduler.Current(), color, 0);
       RenderDepthInfo no_depth{};
       const auto rendering = RenderExecutorTestAccess::AcquireRenderTargets(
           executor, scheduler.Current(), &color, 1, no_depth);
@@ -8750,7 +8814,7 @@ public:
 
       RenderColorInfo color{};
       RenderExecutorTestAccess::ResolveRenderColorTarget(
-          executor, 1, scheduler.Current(), color, 0);
+          executor, scheduler.Current(), color, 0);
       const auto attachment =
           texture_cache.FindRenderTarget(color.image_id, color.desc);
       const auto &image = texture_cache.GetImage(color.image_id);
@@ -8860,7 +8924,7 @@ public:
 
       RenderColorInfo color{};
       RenderExecutorTestAccess::ResolveRenderColorTarget(
-          executor, 1, scheduler.Current(), color, 0);
+          executor, scheduler.Current(), color, 0);
       const auto attachment =
           texture_cache.FindRenderTarget(color.image_id, color.desc);
       const auto &image = texture_cache.GetImage(color.image_id);
@@ -9267,8 +9331,8 @@ public:
                                 mipped_storage_descriptor,
                                 overwide_mipped_storage_descriptor,
                                 overwide_mipped_storage_descriptor};
-      mipped_prepared.program = &mipped_program;
-      mipped_prepared.snapshot = &mipped_snapshot;
+      ShaderStageRuntime mipped_runtime{&mipped_program, std::move(mipped_snapshot)};
+      mipped_prepared.runtime = &mipped_runtime;
       mipped_prepared.images.push_back(
           std::move(plain_mipped_storage_binding));
       mipped_prepared.images.push_back(
@@ -9663,9 +9727,8 @@ public:
       split_program.info = std::move(split_ir.info);
       split_program.bindings = std::move(split_ir.bindings);
       PreparedBindings split_bindings{};
-      ShaderRecompiler::IR::ResourceSnapshot split_snapshot{};
-      split_bindings.program = &split_program;
-      split_bindings.snapshot = &split_snapshot;
+      ShaderStageRuntime split_runtime{.program = &split_program};
+      split_bindings.runtime = &split_runtime;
       split_bindings.images.push_back(
           {split_id, texture_cache.FindTexture(split_id, split_storage_desc),
            split_storage_desc});
@@ -9741,7 +9804,7 @@ public:
       registers.SetRenderControl({});
       RenderDepthInfo disabled_depth{};
       RenderExecutorTestAccess::ResolveRenderDepthTarget(
-          executor, 1, scheduler.Current(), disabled_depth);
+          executor, scheduler.Current(), disabled_depth);
       Require(name, "disabled tests with stale depth write enable",
               !disabled_depth.image_id,
               "a dormant depth write bit bound a depth attachment");
@@ -9753,7 +9816,7 @@ public:
 
       RenderDepthInfo phased_depth{};
       RenderExecutorTestAccess::ResolveRenderDepthTarget(
-          executor, 1, scheduler.Current(), phased_depth);
+          executor, scheduler.Current(), phased_depth);
       auto non_texture_compatible_target = phased_depth_target;
       non_texture_compatible_target.z_info.texture_compatibility =
           Prospero::TextureCompatiblePlaneCompression::kDisable;
@@ -9762,7 +9825,7 @@ public:
       registers.SetDepthRenderTarget(non_texture_compatible_target);
       RenderDepthInfo non_texture_compatible_depth{};
       RenderExecutorTestAccess::ResolveRenderDepthTarget(
-          executor, 1, scheduler.Current(), non_texture_compatible_depth);
+          executor, scheduler.Current(), non_texture_compatible_depth);
       Require(
           name, "depth texture compatibility identity",
           phased_depth.image_id && (phased_depth.desc.info.metadata.kind == ImageMetadataKind::Htile) &&
@@ -9775,7 +9838,6 @@ public:
                   phased_depth.desc.info.metadata.range &&
               phased_depth.desc.info.metadata.stencil_compressed &&
               !phased_depth.depth_clear_enable &&
-              !phased_depth.depth_meta_clear_enable &&
               !texture_cache.IsMeta(phased_depth.desc.info.metadata.range.address) &&
               !texture_cache.GetImage(phased_depth.image_id).IsGpuModified() &&
               !texture_cache.GetImage(phased_depth.image_id).usage.depth_target,
@@ -9808,7 +9870,7 @@ public:
       registers.SetStencilMask(read_only_stencil_mask);
       RenderDepthInfo read_only_depth{};
       RenderExecutorTestAccess::ResolveRenderDepthTarget(
-          executor, 1, scheduler.Current(), read_only_depth);
+          executor, scheduler.Current(), read_only_depth);
       Require(
           name, "read-only depth/stencil target without write addresses",
           read_only_depth.image_id == phased_depth.image_id &&
@@ -9832,7 +9894,7 @@ public:
       registers.SetRenderControl(read_only_render_control);
       RenderDepthInfo read_only_clear_depth{};
       RenderExecutorTestAccess::ResolveRenderDepthTarget(
-          executor, 1, scheduler.Current(), read_only_clear_depth);
+          executor, scheduler.Current(), read_only_clear_depth);
       Require(name, "read-only stencil clear suppression",
               read_only_clear_depth.image_id == phased_depth.image_id &&
                   !read_only_clear_depth.stencil_clear_enable &&
@@ -9854,7 +9916,7 @@ public:
           phased_rendering.depth_stencil_attachment.image_view != nullptr &&
               phased_rendering.num_color_attachments == 0 &&
               phased_rendering.depth_stencil_attachment.has_depth &&
-              phased_depth.depth_meta_clear_enable &&
+              phased_rendering.depth_stencil_attachment.depth_clear &&
               phased_depth.depth_load_clear_enable &&
               texture_cache.IsMeta(phased_depth.desc.info.metadata.range.address) &&
               !texture_cache.IsMetaCleared(
@@ -9892,7 +9954,7 @@ public:
       registers.SetRenderControl(depth_only_render_control);
       RenderDepthInfo depth_only{};
       RenderExecutorTestAccess::ResolveRenderDepthTarget(
-          executor, 1, scheduler.Current(), depth_only);
+          executor, scheduler.Current(), depth_only);
       Require(
           name, "depth-only target with stale stencil state",
           depth_only.image_id && depth_only.desc.view_info.format == vk::Format::eD32Sfloat &&
@@ -10017,7 +10079,7 @@ public:
         }
         RenderDepthInfo bounds_depth{};
         RenderExecutorTestAccess::ResolveRenderDepthTarget(
-            executor, 1, scheduler.Current(), bounds_depth);
+            executor, scheduler.Current(), bounds_depth);
         auto bounds_bindings = RenderExecutorTestAccess::PrepareGraphicsBindings(
             executor, bounds_vertex, bounds_pixel, true);
         const auto bounds_rendering = RenderExecutorTestAccess::AcquireRenderTargets(
@@ -10031,7 +10093,6 @@ public:
                 bounds_depth.image_id == depth_only.image_id &&
                     bounds_depth.depth_bounds_test_enable &&
                     !bounds_depth.depth_write_enable &&
-                    bounds_depth.depth_meta_clear_enable == (pass == 0) &&
                     bounds_depth.depth_load_clear_enable == (pass == 0) &&
                     !texture_cache.IsMetaCleared(depth_only_htile_address, 0) &&
                     bounds_rendering.depth_stencil_attachment.image_layout == readonly_layout &&
@@ -10102,7 +10163,7 @@ public:
         registers.SetStencilMask(shared_stencil_mask);
         RenderDepthInfo shared_depth{};
         RenderExecutorTestAccess::ResolveRenderDepthTarget(
-            executor, 1, scheduler.Current(), shared_depth);
+            executor, scheduler.Current(), shared_depth);
         auto shared_bindings =
             RenderExecutorTestAccess::PrepareGraphicsBindings(
                 executor, shared_depth_vertex, shared_depth_pixel, true);
@@ -11622,7 +11683,8 @@ public:
       test.fragment_code.push_back(EncodeExp0(0x08, 0x1, false));
       test.fragment_code.push_back(EncodeExp1(1, 1, 1, 1));
     } else {
-      AppendVMovLiteral(&test.fragment_code, 0, 0x3f800000u);
+      test.pixel_interpolator_settings = {0x400u};
+      test.fragment_code.push_back(EncodeVintrp(0x02, 0, 0, 0, 2));
     }
     test.fragment_code.push_back(EncodeExp0(0x00, 0xf));
     test.fragment_code.push_back(EncodeExp1(0, 0, 0, 0));
@@ -11671,8 +11733,8 @@ public:
     color.desc.view_info.usage = vk::ImageUsageFlagBits::eColorAttachment;
     color.image_id = cache.FindImage(color.desc);
     std::array<float, 18> vertices{
-        -0.75f, -0.75f, 1, 1, 1, 1, 0.75f, -0.75f, 1, 1, 1, 1,
-        0.0f, 0.75f, 1, 1, 1, 1};
+        -0.75f, -0.75f, 1, 1, 1, 1, 0.75f, -0.75f, 0.5f, 1, 1, 1,
+        0.0f, 0.75f, 0.25f, 1, 1, 1};
     if (depth_feedback) {
       vertices = {-1, -1, 0, 0, 0, 1, 3, -1, 2, 0, 0, 1, -1, 3, 0, 2, 0, 1};
     }
@@ -11680,11 +11742,13 @@ public:
     std::memcpy(vertex_words.data(), vertices.data(), sizeof(vertices));
     auto buffer = CreateHostBuffer(name, sizeof(vertices), vk::BufferUsageFlagBits::eVertexBuffer,
                                    vertex_words);
-    const auto pipeline = [&](bool enabled, uint8_t front, uint8_t back) -> PipelineCache::Pipeline & {
+    const auto pipeline = [&](bool enabled, uint8_t front, uint8_t back,
+                              bool provoking_last = false) -> PipelineCache::Pipeline & {
       HW::ModeControl mode{};
       mode.poly_mode = enabled;
       mode.polymode_front_ptype = front;
       mode.polymode_back_ptype = back;
+      mode.provoking_vtx_last = provoking_last;
       registers.SetModeControl(mode);
       return context.GetPipelineCache().CreateGraphicsPipeline(
           std::span{&color, 1u}, depth, vertex, scheduler.Current(), &pixel,
@@ -11774,6 +11838,19 @@ public:
                   line_pixels[interior] == 0 &&
                   std::ranges::any_of(line_pixels, [](u32 value) { return value == 0x3f800000u; }),
               "wireframe did not preserve triangle edges while leaving its interior empty");
+      auto &last_vertex = pipeline(true, 2, 2, true);
+      Require(name, "provoking vertex pipeline cache",
+              last_vertex.pipeline != filled.pipeline &&
+                  pipeline(true, 2, 2, true).pipeline == last_vertex.pipeline &&
+                  pipeline(true, 2, 2).pipeline == filled.pipeline,
+              "first and last provoking vertices did not keep distinct cached pipelines");
+      draw(last_vertex);
+      const auto last_pixels = read_color();
+      for (size_t i = 0; i < solid_pixels.size(); i++) {
+        Require(name, "flat provoking vertex output",
+                last_pixels[i] == (solid_pixels[i] == 0 ? 0 : 0x3e800000u),
+                "last-vertex flat shading changed coverage or did not use vertex two");
+      }
     }
     resources.UnmapMemory(depth_address, allocation_size);
     scheduler.Finish();
@@ -13115,6 +13192,7 @@ private:
     m_runtime_context.queue_family = m_queue_family;
     m_runtime_context.queue = m_queue;
     m_runtime_context.attachment_feedback_loop_enabled = true;
+    m_runtime_context.provoking_vertex_last_enabled = true;
 
     VmaVulkanFunctions functions{};
     functions.vkGetInstanceProcAddr =
@@ -13227,9 +13305,11 @@ private:
     available_feedback_layout.pNext = &available_color_write;
     vk::PhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT available_feedback_dynamic{};
     available_feedback_dynamic.pNext = &available_feedback_layout;
+    vk::PhysicalDeviceProvokingVertexFeaturesEXT available_provoking_vertex{};
+    available_provoking_vertex.pNext = &available_feedback_dynamic;
     vk::PhysicalDeviceFeatures2 available_features2{};
     available_features2.sType = vk::StructureType::ePhysicalDeviceFeatures2;
-    available_features2.pNext = &available_feedback_dynamic;
+    available_features2.pNext = &available_provoking_vertex;
     m_physical_device.getFeatures2(&available_features2);
     Require("VulkanHarness", "dispatch",
             available_features.shaderStorageImageWriteWithoutFormat == true,
@@ -13261,7 +13341,8 @@ private:
                 available_depth_clip.depthClipEnable && available_clip_control.depthClipControl &&
                 available_color_write.colorWriteEnable &&
                 available_feedback_layout.attachmentFeedbackLoopLayout &&
-                available_feedback_dynamic.attachmentFeedbackLoopDynamicState,
+                available_feedback_dynamic.attachmentFeedbackLoopDynamicState &&
+                available_provoking_vertex.provokingVertexLast,
             "production rasterization features are not supported");
 
     float priority = 1.0f;
@@ -13309,7 +13390,10 @@ private:
     vk::PhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT feedback_dynamic{};
     feedback_dynamic.pNext = &feedback_layout;
     feedback_dynamic.attachmentFeedbackLoopDynamicState = true;
-    device_info.pNext = &feedback_dynamic;
+    vk::PhysicalDeviceProvokingVertexFeaturesEXT provoking_vertex{};
+    provoking_vertex.pNext = &feedback_dynamic;
+    provoking_vertex.provokingVertexLast = available_provoking_vertex.provokingVertexLast;
+    device_info.pNext = &provoking_vertex;
     vk::PhysicalDeviceFeatures device_features{};
     device_features.shaderStorageImageWriteWithoutFormat = true;
     device_features.shaderImageGatherExtended = true;
@@ -13325,7 +13409,8 @@ private:
         VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME,
         VK_EXT_COLOR_WRITE_ENABLE_EXTENSION_NAME,
         VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME,
-        VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME};
+        VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME,
+        VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME};
     device_info.enabledExtensionCount = std::size(device_extensions);
     device_info.ppEnabledExtensionNames = device_extensions;
     RequireVk("VulkanHarness", "dispatch",
@@ -16359,6 +16444,34 @@ TestCase VectorSubrevCoCiU32ExactRawOnGpu() {
   return test;
 }
 
+TestCase VectorCompareWave32KeepsVccHi() {
+  using O = ShaderOpcode;
+
+  std::vector<u32> code;
+  AppendSMovLiteral(&code, 107, 7); // s_mov_b32 vcc_hi, 7
+  code.push_back(EncodeVopc(0xc2, InlineU32(0), 0)); // v_cmp_eq_u32 vcc, 0, v0
+  code.push_back(EncodeVop1(0x01, 3, 107)); // v_mov_b32 v3, vcc_hi
+  code.push_back(EncodeVop2(0x1a, 4, InlineU32(2), 0));
+  AppendBufferStoreDword(&code, 3, 4);
+  AppendEnd(&code);
+
+  TestCase test;
+  test.name = "VectorCompareWave32KeepsVccHi";
+  test.code = code;
+  test.expected = {7, 7, 7, 7, 0, 0, 0, 0};
+  test.opcodes = {O::S_MOV_B32, O::V_CMP_EQ_U32, O::V_MOV_B32, O::V_LSHLREV_B32,
+                  O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.compute_info.threads_num[0] = 4;
+  test.compute_info.threads_num[1] = 1;
+  test.compute_info.threads_num[2] = 1;
+  test.compute_info.group_id[0] = true;
+  test.compute_info.wave_size = 32;
+  test.compute_info.thread_ids_num = 1;
+  test.compute_info.workgroup_register = 0;
+  test.has_compute_info = true;
+  return test;
+}
+
 TestCase VectorVop3BSubrevCoCiUsesEncodedMasks() {
   using O = ShaderOpcode;
 
@@ -16735,6 +16848,33 @@ TestCase CvtPkrtzF16F32SdwaAndOutputModifiers() {
            0x44003c00u},
           {O::V_MOV_B32, O::V_CVT_PKRTZ_F16_F32, O::BUFFER_STORE_DWORD,
            O::S_ENDPGM}};
+}
+
+TestCase PackedFmacF16AccumulatesEachHalfIndependently() {
+  using O = ShaderOpcode;
+
+  // V_PK_FMAC_F16 is VOP2, so it carries no OP_SEL field and each lane must take its own half:
+  //   vdst.lo = src0.lo * src1.lo + vdst.lo
+  //   vdst.hi = src0.hi * src1.hi + vdst.hi
+  // Reading the low half for both lanes gives the same result twice, which is what an
+  // unset OP_SEL_HI produces.
+  std::vector<u32> code;
+  AppendVMovLiteral(&code, 0, 0x42004000u);  // hi=3.0h  lo=2.0h
+  AppendVMovLiteral(&code, 1, 0x47004500u);  // hi=7.0h  lo=5.0h
+  AppendVMovLiteral(&code, 10, 0x49003c00u); // hi=10.0h lo=1.0h
+
+  code.push_back(EncodeVop2(0x3c, 10, Vgpr(0), 1));
+
+  AppendStoreVgpr(&code, 10, 0);
+  AppendEnd(&code);
+
+  // lo = 2*5 + 1  = 11.0h = 0x4980
+  // hi = 3*7 + 10 = 31.0h = 0x4fc0
+  return {"PackedFmacF16AccumulatesEachHalfIndependently",
+          code,
+          {},
+          {0x4fc04980u},
+          {O::V_MOV_B32, O::V_PK_FMAC_F16, O::BUFFER_STORE_DWORD, O::S_ENDPGM}};
 }
 
 TestCase PackedMinMaxF16NanAndSignedZeroEdges() {
@@ -23792,6 +23932,644 @@ TestCase DispatcherIrreducibleControlFlow() {
   return test;
 }
 
+// raytracing: begin - execute one fp32 box-node intersection against a hand-built BVH whose answer
+// is arithmetically obvious. Four unit boxes sit along +Z at z = 40, 30, 20, 10 in slot order,
+// so a ray down +Z from the origin hits all four and the distance sort must return them
+// exactly reversed. Node lives at guest 0x10000; the descriptor holds that base in 256-byte
+// units with box sorting enabled.
+TestCase BvhIntersectRayBoxNodeSorted() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  static constexpr u32 kNode[32] = {
+      0x00000055u, 0x0000005du, 0x00000065u, 0x0000006du, 0xbf800000u, 0xbf800000u,
+      0x42200000u, 0x3f800000u, 0x3f800000u, 0x42240000u, 0xbf800000u, 0xbf800000u,
+      0x41f00000u, 0x3f800000u, 0x3f800000u, 0x41f80000u, 0xbf800000u, 0xbf800000u,
+      0x41a00000u, 0x3f800000u, 0x3f800000u, 0x41a80000u, 0xbf800000u, 0xbf800000u,
+      0x41200000u, 0x3f800000u, 0x3f800000u, 0x41300000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u};
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 5u);
+  AppendVMovLiteral(&code, 1, 0x7149f2cau);
+  AppendVMovU32(&code, 2, 0);
+  AppendVMovU32(&code, 3, 0);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovU32(&code, 5, 0);
+  AppendVMovU32(&code, 6, 0);
+  AppendVMovLiteral(&code, 7, 0x3f800000u);
+  AppendVMovLiteral(&code, 8, 0x7f800000u);
+  AppendVMovLiteral(&code, 9, 0x7f800000u);
+  AppendVMovLiteral(&code, 10, 0x3f800000u);
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  for (u32 dword = 0; dword < 4u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 32u, 0u);
+  std::copy(std::begin(kNode), std::end(kNode),
+            memory.begin() + kNodeByteOffset / sizeof(u32));
+
+  TestCase test;
+  test.name = "BvhIntersectRayBoxNodeSorted";
+  test.code = code;
+  test.initial = std::move(memory);
+  test.expected = {0x0000006du, 0x00000065u, 0x0000005du, 0x00000055u};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0x80000000u;
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
+// raytracing: begin - the fp16 box node, same geometry as the fp32 case so the expected
+// ordering is identical. Every coordinate is exactly representable as a half, so the packed
+// unpack is checked without any rounding slack. Six halves per child sit in three dwords as
+// min = (lo0, hi0, lo1) and max = (hi1, lo2, hi2).
+TestCase BvhIntersectRayFp16BoxNodeSorted() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  static constexpr u32 kNode[16] = {
+      0x00000055u, 0x0000005du, 0x00000065u, 0x0000006du, 0xbc00bc00u, 0x3c005100u,
+      0x51203c00u, 0xbc00bc00u, 0x3c004f80u, 0x4fc03c00u, 0xbc00bc00u, 0x3c004d00u,
+      0x4d403c00u, 0xbc00bc00u, 0x3c004900u, 0x49803c00u};
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 4u);  // node pointer: index 0, kind 4 (fp16 box)
+  AppendVMovLiteral(&code, 1, 0x7149f2cau);
+  AppendVMovU32(&code, 2, 0);
+  AppendVMovU32(&code, 3, 0);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovU32(&code, 5, 0);
+  AppendVMovU32(&code, 6, 0);
+  AppendVMovLiteral(&code, 7, 0x3f800000u);
+  AppendVMovLiteral(&code, 8, 0x7f800000u);
+  AppendVMovLiteral(&code, 9, 0x7f800000u);
+  AppendVMovLiteral(&code, 10, 0x3f800000u);
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  for (u32 dword = 0; dword < 4u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 16u, 0u);
+  std::copy(std::begin(kNode), std::end(kNode),
+            memory.begin() + kNodeByteOffset / sizeof(u32));
+
+  TestCase test;
+  test.name = "BvhIntersectRayFp16BoxNodeSorted";
+  test.code = code;
+  test.initial = std::move(memory);
+  test.expected = {0x0000006du, 0x00000065u, 0x0000005du, 0x00000055u};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0x80000000u;
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
+// raytracing: begin - triangle node, barycentric return mode. A triangle sits in the z = 2
+// plane and a ray goes down +Z from (0.25, 0.25, 0), so it hits at t = 2 with barycentrics
+// (0.25, 0.25). The hardware reports the distance unnormalised, as numerator and denominator,
+// and the barycentrics likewise, so the expected dwords are -2, -1, -0.25, -0.25. The node's
+// last dword maps which barycentric is reported in which slot; 0x9 is the identity for
+// triangle 0.
+TestCase BvhIntersectRayTriangleBarycentric() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  static constexpr u32 kNode[16] = {
+      0x00000000u, 0x00000000u, 0x40000000u, 0x3f800000u, 0x00000000u, 0x40000000u,
+      0x00000000u, 0x3f800000u, 0x40000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u, 0x00000000u, 0x00000009u};
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 0u);  // node pointer: index 0, kind 0 (first triangle of the fan)
+  AppendVMovLiteral(&code, 1, 0x7149f2cau);
+  AppendVMovLiteral(&code, 2, 0x3e800000u);  // origin (0.25, 0.25, 0)
+  AppendVMovLiteral(&code, 3, 0x3e800000u);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovU32(&code, 5, 0);                // direction (0, 0, 1)
+  AppendVMovU32(&code, 6, 0);
+  AppendVMovLiteral(&code, 7, 0x3f800000u);
+  AppendVMovLiteral(&code, 8, 0x7f800000u);  // inverse direction, unused by this path
+  AppendVMovLiteral(&code, 9, 0x7f800000u);
+  AppendVMovLiteral(&code, 10, 0x3f800000u);
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  for (u32 dword = 0; dword < 4u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 16u, 0u);
+  std::copy(std::begin(kNode), std::end(kNode),
+            memory.begin() + kNodeByteOffset / sizeof(u32));
+
+  TestCase test;
+  test.name = "BvhIntersectRayTriangleBarycentric";
+  test.code = code;
+  test.initial = std::move(memory);
+  test.expected = {0xc0000000u, 0xbf800000u, 0xbe800000u, 0xbe800000u};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0x80000000u;
+  test.user_data[3] = 1u << 24u;  // triangle return mode: barycentric
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
+// raytracing: begin - the same triangle, missed. From (0.9, 0.9, 0) the barycentrics sum
+// above one, so the ray passes outside the triangle. There is no hit flag in barycentric
+// mode: a miss is reported as an infinite distance numerator over a denominator of one, and
+// the caller detects it from the numerator. Only those two dwords are checked, because the
+// hardware leaves the barycentric slots untouched on a miss.
+TestCase BvhIntersectRayTriangleMiss() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  static constexpr u32 kNode[16] = {
+      0x00000000u, 0x00000000u, 0x40000000u, 0x3f800000u, 0x00000000u, 0x40000000u,
+      0x00000000u, 0x3f800000u, 0x40000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u, 0x00000000u, 0x00000009u};
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 0u);
+  AppendVMovLiteral(&code, 1, 0x7149f2cau);
+  AppendVMovLiteral(&code, 2, 0x3f666666u);  // origin (0.9, 0.9, 0)
+  AppendVMovLiteral(&code, 3, 0x3f666666u);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovU32(&code, 5, 0);
+  AppendVMovU32(&code, 6, 0);
+  AppendVMovLiteral(&code, 7, 0x3f800000u);
+  AppendVMovLiteral(&code, 8, 0x7f800000u);
+  AppendVMovLiteral(&code, 9, 0x7f800000u);
+  AppendVMovLiteral(&code, 10, 0x3f800000u);
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  AppendStoreVgpr(&code, 16u, 0u);
+  AppendStoreVgpr(&code, 17u, 1u);
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 16u, 0u);
+  std::copy(std::begin(kNode), std::end(kNode),
+            memory.begin() + kNodeByteOffset / sizeof(u32));
+
+  TestCase test;
+  test.name = "BvhIntersectRayTriangleMiss";
+  test.code = code;
+  test.initial = std::move(memory);
+  test.expected = {0x7f800000u, 0x3f800000u};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0x80000000u;
+  test.user_data[3] = 1u << 24u;
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
+// raytracing: begin - the same triangle hit, but with A16 set so the direction and its
+// reciprocal arrive as half pairs in three registers instead of six. The extent and origin
+// stay 32-bit. Direction (0, 0, 1) and its reciprocal are all exactly representable, so the
+// expected result is identical to the 32-bit case and any difference is an unpacking fault.
+TestCase BvhIntersectRayTriangleA16() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  static constexpr u32 kNode[16] = {
+      0x00000000u, 0x00000000u, 0x40000000u, 0x3f800000u, 0x00000000u, 0x40000000u,
+      0x00000000u, 0x3f800000u, 0x40000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u, 0x00000000u, 0x00000009u};
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 0u);
+  AppendVMovLiteral(&code, 1, 0x7149f2cau);
+  AppendVMovLiteral(&code, 2, 0x3e800000u);  // origin (0.25, 0.25, 0), still 32-bit
+  AppendVMovLiteral(&code, 3, 0x3e800000u);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovU32(&code, 5, 0);                // {dir.x, dir.y} = {0, 0}
+  AppendVMovLiteral(&code, 6, 0x7c003c00u);  // {dir.z, inv.x} = {1, +inf}
+  AppendVMovLiteral(&code, 7, 0x3c007c00u);  // {inv.y, inv.z} = {+inf, 1}
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u, 0u, true));
+  for (u32 dword = 0; dword < 4u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 16u, 0u);
+  std::copy(std::begin(kNode), std::end(kNode),
+            memory.begin() + kNodeByteOffset / sizeof(u32));
+
+  TestCase test;
+  test.name = "BvhIntersectRayTriangleA16";
+  test.code = code;
+  test.initial = std::move(memory);
+  test.expected = {0xc0000000u, 0xbf800000u, 0xbe800000u, 0xbe800000u};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0x80000000u;
+  test.user_data[3] = 1u << 24u;
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
+// raytracing: begin - the 64-bit node pointer form, opcode 0xe7. The pointer occupies two
+// registers instead of one and everything after shifts down by one, so this exercises the
+// wide pointer assembly. Same node and ray as the 32-bit box case, so the expected ordering
+// is identical.
+TestCase BvhIntersectRayBvh64BoxNode() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  static constexpr u32 kNode[32] = {
+      0x00000055u, 0x0000005du, 0x00000065u, 0x0000006du, 0xbf800000u, 0xbf800000u,
+      0x42200000u, 0x3f800000u, 0x3f800000u, 0x42240000u, 0xbf800000u, 0xbf800000u,
+      0x41f00000u, 0x3f800000u, 0x3f800000u, 0x41f80000u, 0xbf800000u, 0xbf800000u,
+      0x41a00000u, 0x3f800000u, 0x3f800000u, 0x41a80000u, 0xbf800000u, 0xbf800000u,
+      0x41200000u, 0x3f800000u, 0x3f800000u, 0x41300000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u};
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 5u);   // node pointer low: index 0, kind 5
+  AppendVMovU32(&code, 1, 0u);   // node pointer high
+  AppendVMovLiteral(&code, 2, 0x7149f2cau);
+  AppendVMovU32(&code, 3, 0);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovU32(&code, 5, 0);
+  AppendVMovU32(&code, 6, 0);
+  AppendVMovU32(&code, 7, 0);
+  AppendVMovLiteral(&code, 8, 0x3f800000u);
+  AppendVMovLiteral(&code, 9, 0x7f800000u);
+  AppendVMovLiteral(&code, 10, 0x7f800000u);
+  AppendVMovLiteral(&code, 11, 0x3f800000u);
+  code.push_back(EncodeMimg0(0xe7u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  for (u32 dword = 0; dword < 4u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 32u, 0u);
+  std::copy(std::begin(kNode), std::end(kNode),
+            memory.begin() + kNodeByteOffset / sizeof(u32));
+
+  TestCase test;
+  test.name = "BvhIntersectRayBvh64BoxNode";
+  test.code = code;
+  test.initial = std::move(memory);
+  test.expected = {0x0000006du, 0x00000065u, 0x0000005du, 0x00000055u};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH64_INTERSECT_RAY, O::BUFFER_STORE_DWORD,
+                  O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0x80000000u;
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+
+// raytracing: with box sorting disabled the four children stay in slot order and a miss keeps
+// its slot rather than migrating to the tail. The ray is clipped so the two far boxes miss.
+TestCase BvhIntersectRayBoxNodeUnsorted() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  static constexpr u32 kNode[32] = {
+      0x00000055u, 0x0000005du, 0x00000065u, 0x0000006du, 0xbf800000u, 0xbf800000u,
+      0x42200000u, 0x3f800000u, 0x3f800000u, 0x42240000u, 0xbf800000u, 0xbf800000u,
+      0x41f00000u, 0x3f800000u, 0x3f800000u, 0x41f80000u, 0xbf800000u, 0xbf800000u,
+      0x41a00000u, 0x3f800000u, 0x3f800000u, 0x41a80000u, 0xbf800000u, 0xbf800000u,
+      0x41200000u, 0x3f800000u, 0x3f800000u, 0x41300000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u};
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 5u);
+  AppendVMovLiteral(&code, 1, 0x41c80000u);  // extent 25: the z=30 and z=40 boxes fall outside
+  AppendVMovU32(&code, 2, 0);
+  AppendVMovU32(&code, 3, 0);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovU32(&code, 5, 0);
+  AppendVMovU32(&code, 6, 0);
+  AppendVMovLiteral(&code, 7, 0x3f800000u);
+  AppendVMovLiteral(&code, 8, 0x7f800000u);
+  AppendVMovLiteral(&code, 9, 0x7f800000u);
+  AppendVMovLiteral(&code, 10, 0x3f800000u);
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  for (u32 dword = 0; dword < 4u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 32u, 0u);
+  std::copy(std::begin(kNode), std::end(kNode),
+            memory.begin() + kNodeByteOffset / sizeof(u32));
+
+  TestCase test;
+  test.name = "BvhIntersectRayBoxNodeUnsorted";
+  test.code = code;
+  test.initial = std::move(memory);
+  // slots 0 and 1 are the z=40 and z=30 boxes, beyond the extent
+  test.expected = {0xffffffffu, 0xffffffffu, 0x00000065u, 0x0000006du};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0u;  // box sorting disabled
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
+// raytracing: begin - a zero-thickness box at the ray's own y with an infinite inverse
+// direction on that axis, so the y slab evaluates to 0 * inf = NaN. IEEE minNum/maxNum ignore
+// the NaN, leaving the x and z slabs to decide: child 0 lies at x in [2, 4] and is missed,
+// child 1 straddles the origin and is hit. Order-dependent NaN propagation would drop the x
+// constraint and report child 0 as a hit at t = 0 as well.
+TestCase BvhIntersectRayBoxNodeNanAxis() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  static constexpr u32 kNode[32] = {
+      0x00000055u, 0x0000005du, 0xffffffffu, 0xffffffffu, 0x40000000u, 0x00000000u,
+      0xbf800000u, 0x40800000u, 0x00000000u, 0x3f800000u, 0xbf800000u, 0x00000000u,
+      0xbf800000u, 0x3f800000u, 0x00000000u, 0x3f800000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u};
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 5u);
+  AppendVMovLiteral(&code, 1, 0x41200000u);
+  AppendVMovU32(&code, 2, 0);
+  AppendVMovU32(&code, 3, 0);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovLiteral(&code, 5, 0x3f800000u);
+  AppendVMovU32(&code, 6, 0);
+  AppendVMovLiteral(&code, 7, 0x3f800000u);
+  AppendVMovLiteral(&code, 8, 0x3f800000u);
+  AppendVMovLiteral(&code, 9, 0x7f800000u);
+  AppendVMovLiteral(&code, 10, 0x3f800000u);
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  for (u32 dword = 0; dword < 4u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 32u, 0u);
+  std::copy(std::begin(kNode), std::end(kNode),
+            memory.begin() + kNodeByteOffset / sizeof(u32));
+
+  TestCase test;
+  test.name = "BvhIntersectRayBoxNodeNanAxis";
+  test.code = code;
+  test.initial = std::move(memory);
+  test.expected = {0x0000005du, 0xffffffffu, 0xffffffffu, 0xffffffffu};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0x80000000u;
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
+// raytracing: begin - box growing. A ray through the unit box's corner region enters the x
+// slab at t = 1 and leaves the y slab at t = 1 - 2^-23, so the interval is empty by one ulp
+// and the descriptor with no allowance misses. The second descriptor grows the far bound by
+// 4 ulps, (1 - 2^-23)(1 + 2^-22) rounds to 1 + 2^-23, and the same node is hit. Both
+// descriptors read the same node in one dispatch, so the run is its own control.
+TestCase BvhIntersectRayBoxNodeGrown() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  static constexpr u32 kNode[32] = {
+      0x00000055u, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x3f800000u, 0x3f800000u, 0x3f800000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u};
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 5u);
+  AppendVMovLiteral(&code, 1, 0x41200000u);
+  AppendVMovLiteral(&code, 2, 0xbf800000u);  // origin (-1, 2^-23, 0.5)
+  AppendVMovLiteral(&code, 3, 0x34000000u);
+  AppendVMovLiteral(&code, 4, 0x3f000000u);
+  AppendVMovLiteral(&code, 5, 0x3f800000u);  // direction (1, 1, 0)
+  AppendVMovLiteral(&code, 6, 0x3f800000u);
+  AppendVMovU32(&code, 7, 0);
+  AppendVMovLiteral(&code, 8, 0x3f800000u);  // inverse (1, 1, +inf)
+  AppendVMovLiteral(&code, 9, 0x3f800000u);
+  AppendVMovLiteral(&code, 10, 0x7f800000u);
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(20u, 0u, 1u));
+  for (u32 dword = 0; dword < 8u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 32u, 0u);
+  std::copy(std::begin(kNode), std::end(kNode),
+            memory.begin() + kNodeByteOffset / sizeof(u32));
+
+  TestCase test;
+  test.name = "BvhIntersectRayBoxNodeGrown";
+  test.code = code;
+  test.initial = std::move(memory);
+  test.expected = {0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu,
+                   0x00000055u, 0xffffffffu, 0xffffffffu, 0xffffffffu};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0u;  // no growth
+  test.user_data[4] = kGuestBase >> 8u;
+  test.user_data[5] = 4u << 23u;  // grow the far bound by 4 ulps
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
+// raytracing: begin - a node pointer into a page the BVH mapping does not cover. The page
+// lookup yields device address 0; the helper must neither load through it (a GPU fault, seen
+// as a device loss) nor report children, so all four slots come back invalid.
+TestCase BvhIntersectRayUnmappedNodeMisses() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, (0x400u << 3u) | 5u);  // fp32 box node 0x10000 bytes past the base
+  AppendVMovLiteral(&code, 1, 0x41200000u);
+  AppendVMovU32(&code, 2, 0);
+  AppendVMovU32(&code, 3, 0);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovU32(&code, 5, 0);
+  AppendVMovU32(&code, 6, 0);
+  AppendVMovLiteral(&code, 7, 0x3f800000u);
+  AppendVMovLiteral(&code, 8, 0x7f800000u);
+  AppendVMovLiteral(&code, 9, 0x7f800000u);
+  AppendVMovLiteral(&code, 10, 0x3f800000u);
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  for (u32 dword = 0; dword < 4u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  TestCase test;
+  test.name = "BvhIntersectRayUnmappedNodeMisses";
+  test.code = code;
+  test.initial = std::vector<u32>(kNodeByteOffset / sizeof(u32) + 32u, 0u);
+  test.expected = {0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0x80000000u;
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
+// raytracing: begin - the same triangle hit, in triangle-ID return mode rather than
+// barycentric. The distance is still reported as a numerator over a denominator, but the last
+// two dwords become the node's stored id plus the index of the triangle within the fan, and an
+// explicit hit flag.
+TestCase BvhIntersectRayTriangleIdMode() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  static constexpr u32 kNode[16] = {
+      0x00000000u, 0x00000000u, 0x40000000u, 0x3f800000u, 0x00000000u, 0x40000000u,
+      0x00000000u, 0x3f800000u, 0x40000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+      0x00000000u, 0x00000000u, 0x00000000u, 0x00000009u};
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 0u);
+  AppendVMovLiteral(&code, 1, 0x7149f2cau);
+  AppendVMovLiteral(&code, 2, 0x3e800000u);
+  AppendVMovLiteral(&code, 3, 0x3e800000u);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovU32(&code, 5, 0);
+  AppendVMovU32(&code, 6, 0);
+  AppendVMovLiteral(&code, 7, 0x3f800000u);
+  AppendVMovLiteral(&code, 8, 0x7f800000u);
+  AppendVMovLiteral(&code, 9, 0x7f800000u);
+  AppendVMovLiteral(&code, 10, 0x3f800000u);
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  for (u32 dword = 0; dword < 4u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 16u, 0u);
+  std::copy(std::begin(kNode), std::end(kNode),
+            memory.begin() + kNodeByteOffset / sizeof(u32));
+
+  TestCase test;
+  test.name = "BvhIntersectRayTriangleIdMode";
+  test.code = code;
+  test.initial = std::move(memory);
+  test.expected = {0xc0000000u, 0xbf800000u, 0x00000009u, 0x00000001u};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0x80000000u;
+  test.user_data[3] = 0u;  // triangle return mode: triangle id
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
+// raytracing: begin - node kind 7 is a user/procedural node, which the hardware does not
+// intersect; it reports no hit and leaves the guest to handle the primitive itself. Kind 6 is
+// reserved on base PS5. Both must fail safe rather than reading the node as geometry, so the
+// guest traversal unwinds instead of following a garbage child pointer. The node memory here
+// is deliberately filled with a pattern that would look like plausible children if it were
+// ever decoded as a box.
+TestCase BvhIntersectRayUserNodeMisses() {
+  using O = ShaderOpcode;
+  constexpr u32 kGuestBase = 0x10000u;
+  constexpr u32 kNodeByteOffset = 256u;
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 0, 7u);  // node pointer: index 0, kind 7 (user / procedural)
+  AppendVMovLiteral(&code, 1, 0x7149f2cau);
+  AppendVMovU32(&code, 2, 0);
+  AppendVMovU32(&code, 3, 0);
+  AppendVMovU32(&code, 4, 0);
+  AppendVMovU32(&code, 5, 0);
+  AppendVMovU32(&code, 6, 0);
+  AppendVMovLiteral(&code, 7, 0x3f800000u);
+  AppendVMovLiteral(&code, 8, 0x7f800000u);
+  AppendVMovLiteral(&code, 9, 0x7f800000u);
+  AppendVMovLiteral(&code, 10, 0x3f800000u);
+  code.push_back(EncodeMimg0(0xe6u, 0xfu, 0u, false, 0u, true));
+  code.push_back(EncodeMimg1(16u, 0u, 0u));
+  for (u32 dword = 0; dword < 4u; dword++) {
+    AppendStoreVgpr(&code, 16u + dword, dword);
+  }
+  AppendEnd(&code);
+
+  std::vector<u32> memory(kNodeByteOffset / sizeof(u32) + 32u, 0u);
+  for (u32 index = 0; index < 32u; index++) {
+    memory[kNodeByteOffset / sizeof(u32) + index] = 0x00000045u + index;
+  }
+
+  TestCase test;
+  test.name = "BvhIntersectRayUserNodeMisses";
+  test.code = code;
+  test.initial = std::move(memory);
+  test.expected = {0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu};
+  test.opcodes = {O::V_MOV_B32, O::IMAGE_BVH_INTERSECT_RAY, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.has_user_data = true;
+  test.user_data[0] = kGuestBase >> 8u;
+  test.user_data[1] = 0x80000000u;
+  test.user_data[50] = 1u << 20u;
+  test.bda_mappings = {{kGuestBase, kNodeByteOffset}};
+  return test;
+}
+// raytracing: end
+
 std::vector<TestCase> MakeCases() {
   std::vector<TestCase> cases;
   cases.reserve(128);
@@ -23799,6 +24577,7 @@ std::vector<TestCase> MakeCases() {
     cases.push_back(factory());
   };
 
+  AddCase(VectorCompareWave32KeepsVccHi);
   AddCase(IntegerAddSubMul);
   AddCase(BitwiseOps);
   AddCase(Shifts);
@@ -23863,6 +24642,7 @@ std::vector<TestCase> MakeCases() {
   AddCase(VectorSubCoCiU32CompactAndVop3);
   AddCase(VectorSubrevCoCiU32ExactRawOnGpu);
   AddCase(VectorVop3BSubrevCoCiUsesEncodedMasks);
+
   AddCase(VectorVop3BCarryOutWritesSgprMask);
   AddCase(VectorVop3BCarryOutUsesEncodedSdst);
   AddCase(VectorVop3BSubCoU32UsesRdna2Opcode310);
@@ -23874,6 +24654,7 @@ std::vector<TestCase> MakeCases() {
   AddCase(CvtPkU8F32PacksSelectedByte);
   AddCase(CvtPkrtzF16F32SubnormalRoundsTowardZero);
   AddCase(CvtPkrtzF16F32SdwaAndOutputModifiers);
+  AddCase(PackedFmacF16AccumulatesEachHalfIndependently);
   AddCase(PackedMinMaxF16NanAndSignedZeroEdges);
   AddCase(VectorMinMaxF16Ops);
   AddCase(VectorCvtU16F16Sdwa);
@@ -24007,6 +24788,20 @@ std::vector<TestCase> MakeCases() {
   AddCase(TBufferStoreFormatXy88IntegerComponents);
   AddCase(TBufferLoadFormatXy88IntegerComponents);
   AddCase(TBufferStoreVariants);
+  // raytracing: begin
+  AddCase(BvhIntersectRayBoxNodeSorted);
+  AddCase(BvhIntersectRayFp16BoxNodeSorted);
+  AddCase(BvhIntersectRayTriangleBarycentric);
+  AddCase(BvhIntersectRayTriangleMiss);
+  AddCase(BvhIntersectRayTriangleA16);
+  AddCase(BvhIntersectRayBvh64BoxNode);
+  AddCase(BvhIntersectRayBoxNodeUnsorted);
+  AddCase(BvhIntersectRayBoxNodeNanAxis);
+  AddCase(BvhIntersectRayBoxNodeGrown);
+  AddCase(BvhIntersectRayUnmappedNodeMisses);
+  AddCase(BvhIntersectRayTriangleIdMode);
+  AddCase(BvhIntersectRayUserNodeMisses);
+  // raytracing: end
   AddCase(FlatLoadVariants);
   AddCase(FlatSubdwordLoadsApplyByteOffset);
   AddCase(FlatVirtualAddressRebasesGuestAllocation);
@@ -26358,6 +27153,63 @@ void CheckShaderRecompilerFatalContracts() {
 }
 #endif
 
+// raytracing: begin - BVH decode coverage. The first case is the exact instruction captured from
+// Astro's Playroom compute shader 0x0000000500571000 at pc 0x2190, the K#1 blocker. The
+// rest come from raytracing/harness, compiled by the platform shader compiler, and cover
+// both opcodes in the NSA and sequential-address encodings.
+void CheckBvhIntersectRayDecode() {
+  struct Variant {
+    const char *name;
+    const char *decoded;
+    std::vector<u32> words;
+  };
+  const std::vector<Variant> variants = {
+      {"BvhIntersectRayAstroCapture", "IMAGE_BVH_INTERSECT_RAY",
+       {0xf1989f07u, 0x00040505u, 0x4442413du, 0x4543403eu, 0x00004746u}},
+      {"BvhIntersectRayBvh32Nsa", "IMAGE_BVH_INTERSECT_RAY",
+       {0xf1989f07u, 0x00010004u, 0x01010100u, 0x03020101u, 0x00000203u}},
+      {"BvhIntersectRayBvh32Sequential", "IMAGE_BVH_INTERSECT_RAY",
+       {0xf1989f01u, 0x00010100u}},
+      {"BvhIntersectRayBvh64Nsa", "IMAGE_BVH64_INTERSECT_RAY",
+       {0xf19c9f07u, 0x00010004u, 0x01010001u, 0x02010101u, 0x00020303u}},
+      {"BvhIntersectRayBvh64Sequential", "IMAGE_BVH64_INTERSECT_RAY",
+       {0xf19c9f01u, 0x00010100u}},
+  };
+
+  // The decode variants above deliberately discard the result, so dead-code elimination
+  // removes the intersection - correct behaviour, but it means they cannot show that the
+  // SPIR-V helper is emitted. This case consumes all four result dwords so it survives.
+  {
+    std::vector<u32> code = {0xf1989f07u, 0x00040505u, 0x4442413du, 0x4543403eu, 0x00004746u};
+    for (u32 dword = 0; dword < 4u; dword++) {
+      AppendStoreVgpr(&code, 5u + dword, dword);
+    }
+    AppendEnd(&code);
+
+    TestCase test;
+    test.name = "BvhIntersectRayEmitsHelper";
+    test.code = code;
+    test.initial = std::vector<u32>(4, 0);
+    test.decoded_counts = {{"IMAGE_BVH_INTERSECT_RAY", 1}};
+    test.required_spirv = {"bvh_intersect_ray", "OpFunctionCall"};
+    (void)CompileCase(test);
+    std::printf("[host]    %-32s ok\n", "BvhIntersectRayEmitsHelper");
+  }
+
+  for (const auto &variant : variants) {
+    std::vector<u32> code = variant.words;
+    AppendEnd(&code);
+
+    TestCase test;
+    test.name = variant.name;
+    test.code = code;
+    test.decoded_counts = {{variant.decoded, 1}};
+    (void)CompileCase(test);
+    std::printf("[host]    %-32s ok\n", variant.name);
+  }
+}
+// raytracing: end
+
 void CheckStorageTextureVolumeUploadLayout() {
   constexpr auto format = Prospero::BufferFormat::k16_16_16_16Float;
   constexpr uint32_t width = 33;
@@ -27347,8 +28199,12 @@ void CheckPm4NativeTargetGeometryRegisters(RenderContext &renderer) {
                                   g_hw_sh_indirect_func[offset] == nullptr;
   }
   for (uint32_t offset = 0x0cau; offset <= 0x0ebu; offset++) {
+    // Astro Bot writes the retired ES resource registers through SET_SH_REG_INDIRECT.
+    // The imported RT branch deliberately accepts these two writes as no-ops.
+    const bool ignored_es_resource = offset == Pm4::SPI_SHADER_PGM_RSRC1_ES ||
+                                     offset == Pm4::SPI_SHADER_PGM_RSRC2_ES;
     legacy_slots_are_unhandled &= g_hw_sh_func[offset] == nullptr &&
-                                  g_hw_sh_indirect_func[offset] == nullptr;
+        ((g_hw_sh_indirect_func[offset] != nullptr) == ignored_es_resource);
   }
 
   std::array<uint32_t, 3> index_size_packet{
@@ -28288,6 +29144,40 @@ int main(int argc, char **argv) {
     RunGraphicsCase(&vulkan, GraphicsPositionWExport());
     return 0;
   }
+  // raytracing: begin
+  if (argc == 2 && std::strcmp(argv[1], "--bvh-exec-only") == 0) {
+    VulkanHarness vulkan;
+    RunCase(&vulkan, BvhIntersectRayBoxNodeSorted());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayBoxNodeSorted");
+    RunCase(&vulkan, BvhIntersectRayFp16BoxNodeSorted());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayFp16BoxNodeSorted");
+    RunCase(&vulkan, BvhIntersectRayTriangleBarycentric());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayTriangleBarycentric");
+    RunCase(&vulkan, BvhIntersectRayTriangleMiss());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayTriangleMiss");
+    RunCase(&vulkan, BvhIntersectRayTriangleA16());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayTriangleA16");
+    RunCase(&vulkan, BvhIntersectRayBvh64BoxNode());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayBvh64BoxNode");
+    RunCase(&vulkan, BvhIntersectRayBoxNodeUnsorted());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayBoxNodeUnsorted");
+    RunCase(&vulkan, BvhIntersectRayBoxNodeNanAxis());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayBoxNodeNanAxis");
+    RunCase(&vulkan, BvhIntersectRayBoxNodeGrown());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayBoxNodeGrown");
+    RunCase(&vulkan, BvhIntersectRayUnmappedNodeMisses());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayUnmappedNodeMisses");
+    RunCase(&vulkan, BvhIntersectRayTriangleIdMode());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayTriangleIdMode");
+    RunCase(&vulkan, BvhIntersectRayUserNodeMisses());
+    std::printf("[gpu]     %-32s ok\n", "BvhIntersectRayUserNodeMisses");
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--bvh-decode-only") == 0) {
+    CheckBvhIntersectRayDecode();
+    return 0;
+  }
+  // raytracing: end
   if (argc == 2 && std::strcmp(argv[1], "--clip-control-only") == 0) {
     CheckClipControlDepthClipState();
     return 0;
@@ -28299,6 +29189,11 @@ int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--scheduler-only") == 0) {
     VulkanHarness vulkan;
     vulkan.CheckSchedulerTimeline();
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--host-image-allocation-only") == 0) {
+    VulkanHarness vulkan;
+    vulkan.CheckHostImageAllocation();
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--occlusion-dump-only") == 0) {
@@ -28590,6 +29485,9 @@ int main(int argc, char **argv) {
 #endif
   CheckImageSamplerSpecialization();
   CheckNativeImageDescriptorTypes();
+  // raytracing: begin
+  CheckBvhIntersectRayDecode();
+  // raytracing: end
   CheckClipControlDepthClipState();
   CheckReferenceClockScale();
   CheckErrorDialogLifecycle();
@@ -28618,6 +29516,7 @@ int main(int argc, char **argv) {
   CheckIndirectImageKeySwitch();
   CheckPs5GameExampleImageClearRuntimeShape();
   vulkan.CheckSchedulerTimeline();
+  vulkan.CheckHostImageAllocation();
   vulkan.CheckDescriptorHeapLargeSet();
   vulkan.CheckGraphicsPushConstantBank();
   vulkan.CheckGpuMappedRangeLifecycle();

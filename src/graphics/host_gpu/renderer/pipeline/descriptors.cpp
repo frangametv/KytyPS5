@@ -20,7 +20,6 @@
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
-#include "graphics/host_gpu/vma.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/BindingLayout.h"
@@ -265,6 +264,40 @@ static void ValidateSampledDepthBinding(const ShaderRecompiler::IR::ImageResourc
 	     descriptor.fields[5], descriptor.fields[6], descriptor.fields[7]);
 }
 
+// A storage view may address a level past the declared count: it lives in the mip tail, and it
+// exists when adding it does not move the tail. Otherwise preserve the declared count:
+// fixed views clamp to it, while dynamic views reject an out-of-range last level.
+static uint32_t StorageTextureLevels(const ShaderTextureResource& descriptor, uint32_t declared) {
+	const auto last = static_cast<uint32_t>(descriptor.LastLevel());
+	if (last < declared) {
+		return declared;
+	}
+	const auto tile = descriptor.TileMode();
+	if (descriptor.Type() == Prospero::ImageType::kColor3D || tile == Prospero::TileMode::kLinear) {
+		return declared;
+	}
+	TileSurfaceLayout      declared_layout {};
+	TileSurfaceLayout      extended_layout {};
+	TileSurfaceDescription surface {descriptor.Format(),
+	                                tile,
+	                                TileSurfaceDimension::Dim2D,
+	                                static_cast<uint32_t>(descriptor.Width5()) + 1u,
+	                                static_cast<uint32_t>(descriptor.Height5()) + 1u,
+	                                1,
+	                                declared,
+	                                1};
+	if (!TileGetTiledTextureLayout(surface, declared_layout) ||
+	    declared_layout.first_tail_level >= declared) {
+		return declared;
+	}
+	surface.levels = last + 1u;
+	if (!TileGetTiledTextureLayout(surface, extended_layout) ||
+	    extended_layout.first_tail_level != declared_layout.first_tail_level) {
+		return declared;
+	}
+	return surface.levels;
+}
+
 static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::ImageResource& resource,
                                                 const ShaderTextureResource& descriptor) {
 	const auto tile              = descriptor.TileMode();
@@ -328,12 +361,16 @@ static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::Imag
 	    IsValidImageSwizzle(swizzle) &&
 	    (swizzle == DstSel(4, 5, 6, 7) || !resource.read || resource.atomic);
 	const auto max_mip = resource.r128 ? descriptor.LastLevel() : descriptor.MaxMip();
+	const auto levels  = StorageTextureLevels(descriptor, static_cast<uint32_t>(max_mip) + 1u);
+	if (levels == 0) {
+		return false;
+	}
 	const auto view_last_level =
 	    resource.mip_mode == ShaderRecompiler::IR::ImageMipMode::DynamicStorage
-	        ? descriptor.LastLevel()
-	        : std::min(descriptor.LastLevel(), max_mip);
+	        ? static_cast<uint32_t>(descriptor.LastLevel())
+	        : std::min(static_cast<uint32_t>(descriptor.LastLevel()), levels - 1u);
 	return (is_1d || is_1d_array || is_2d || is_2d_array || is_3d) && supported_tile &&
-	       descriptor.BaseLevel() <= view_last_level && view_last_level <= max_mip &&
+	       descriptor.BaseLevel() <= view_last_level && view_last_level < levels &&
 	       descriptor.MinLod() == 0 && supported_swizzle && descriptor.BCSwizzle() == 0 &&
 	       !descriptor.MsaaDepth();
 }
@@ -405,30 +442,22 @@ void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	     descriptor.fields[5], descriptor.fields[6], descriptor.fields[7]);
 }
 
-struct NullImageSpec {
-	vk::Format             format;
-	Prospero::BufferFormat guest_format;
-};
-
-static NullImageSpec NullTextureSpec(const ShaderRecompiler::IR::ImageResource& resource) {
-	switch (resource.numeric_class) {
-		case Prospero::TextureNumericClass::Float:
-			return {vk::Format::eR32Sfloat, Prospero::BufferFormat::k32Float};
-		case Prospero::TextureNumericClass::Uint:
-			return {vk::Format::eR32Uint, Prospero::BufferFormat::k32UInt};
-		case Prospero::TextureNumericClass::Sint:
-			return {vk::Format::eR32Sint, Prospero::BufferFormat::k32SInt};
-		case Prospero::TextureNumericClass::Unsupported: break;
-	}
-	EXIT("null image has unsupported numeric class\n");
-}
-
 static TextureCache::ImageDesc NullTextureDesc(const ShaderRecompiler::IR::ImageResource& resource,
                                                TextureCache::BindingType                  binding) {
-	const auto              spec = NullTextureSpec(resource);
 	TextureCache::ImageDesc desc {};
-	desc.info.pixel_format    = spec.format;
-	desc.info.guest_format    = spec.guest_format;
+	switch (resource.numeric_class) {
+		case Prospero::TextureNumericClass::Float:
+			desc.info.guest_format = Prospero::BufferFormat::k32Float;
+			break;
+		case Prospero::TextureNumericClass::Uint:
+			desc.info.guest_format = Prospero::BufferFormat::k32UInt;
+			break;
+		case Prospero::TextureNumericClass::Sint:
+			desc.info.guest_format = Prospero::BufferFormat::k32SInt;
+			break;
+		default: EXIT("null image has unsupported numeric class\n");
+	}
+	desc.info.pixel_format    = VulkanFormat(desc.info.guest_format);
 	desc.info.type            = Prospero::ImageType::kColor2D;
 	desc.info.extent          = {1, 1, 1};
 	desc.info.resources       = {1, 1};
@@ -572,16 +601,22 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	const auto type         = TextureType(descriptor);
 	const bool multisampled = IsMultisampledTexture(type);
 	const auto max_mip      = resource.r128 ? last_level : descriptor.MaxMip();
-	const auto levels       = multisampled ? 1u : static_cast<uint32_t>(max_mip) + 1u;
+	auto       levels       = multisampled ? 1u : static_cast<uint32_t>(max_mip) + 1u;
+	if (storage && !multisampled) {
+		levels = StorageTextureLevels(descriptor, levels);
+	}
 	const bool dynamic_storage =
 	    storage && resource.mip_mode == ShaderRecompiler::IR::ImageMipMode::DynamicStorage;
 	const auto view_last_level =
-	    !multisampled && !dynamic_storage ? std::min(last_level, max_mip) : last_level;
+	    !multisampled && !dynamic_storage
+	        ? std::min(static_cast<uint32_t>(last_level), levels != 0 ? levels - 1u : 0u)
+	        : static_cast<uint32_t>(last_level);
 	const auto tile       = descriptor.TileMode();
 	const bool depth_tile = tile == Prospero::TileMode::kDepth;
 	const bool msaa_tile  = depth_tile || tile == Prospero::TileMode::kRenderTarget;
 	const bool msaa_array = type == Prospero::ImageType::kColor2DMsaaArray;
-	if ((!multisampled && (base_level > view_last_level || view_last_level >= levels)) ||
+	if ((!multisampled &&
+	     (levels == 0 || base_level > view_last_level || view_last_level >= levels)) ||
 	    (multisampled &&
 	     (base_level != 0 || last_level == 0 || last_level > 3 || max_mip != last_level ||
 	      !msaa_tile || (descriptor.MsaaDepth() && !depth_tile) ||
@@ -770,8 +805,7 @@ PreparedBindings RenderExecutor::PrepareBindings(const ShaderStageRuntime& runti
 	const auto& program  = *runtime.program;
 	const auto& snapshot = runtime.resources;
 	PreparedBindings prepared;
-	prepared.program  = runtime.program;
-	prepared.snapshot = &runtime.resources;
+	prepared.runtime = &runtime;
 	prepared.images.reserve(program.info.images.size());
 	for (uint32_t i = 0; i < program.info.images.size(); i++) {
 		auto binding = ResolveTexture(program.info.images[i], snapshot.images[i]);
@@ -796,9 +830,9 @@ PreparedBindings RenderExecutor::PrepareBindings(const ShaderStageRuntime& runti
 
 void RenderExecutor::FindBuffers(PreparedBindings& prepared) {
 	KYTY_PROFILER_FUNCTION();
-	EXIT_IF(prepared.program == nullptr || prepared.snapshot == nullptr);
-	const auto& program  = *prepared.program;
-	const auto& snapshot = *prepared.snapshot;
+	EXIT_IF(prepared.runtime == nullptr || !*prepared.runtime);
+	const auto& program  = *prepared.runtime->program;
+	const auto& snapshot = prepared.runtime->resources;
 	auto&       cache    = m_context.GetBufferCache();
 
 	prepared.buffer_sources.clear();
@@ -821,9 +855,9 @@ void RenderExecutor::FindBuffers(PreparedBindings& prepared) {
 
 void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 	KYTY_PROFILER_FUNCTION();
-	EXIT_IF(prepared.program == nullptr || prepared.snapshot == nullptr);
-	const auto& program   = *prepared.program;
-	const auto& snapshot  = *prepared.snapshot;
+	EXIT_IF(prepared.runtime == nullptr || !*prepared.runtime);
+	const auto& program   = *prepared.runtime->program;
+	const auto& snapshot  = prepared.runtime->resources;
 	const auto& layout    = program.bindings;
 	EXIT_IF(prepared.buffer_sources.size() != program.info.buffers.size());
 
@@ -856,9 +890,9 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 
 void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 	KYTY_PROFILER_FUNCTION();
-	EXIT_IF(prepared.program == nullptr || prepared.snapshot == nullptr);
-	const auto& program  = *prepared.program;
-	const auto& snapshot = *prepared.snapshot;
+	EXIT_IF(prepared.runtime == nullptr || !*prepared.runtime);
+	const auto& program  = *prepared.runtime->program;
+	const auto& snapshot = prepared.runtime->resources;
 	auto&       images   = prepared.images;
 	EXIT_IF(images.size() != program.info.images.size());
 	auto& texture_cache = m_context.GetTextureCache();
@@ -916,8 +950,8 @@ RenderExecutor::PrepareGraphicsBindings(const ShaderStageRuntime& vertex,
 	if (bindings.pixel) {
 		FindBuffers(*bindings.pixel);
 	}
-	if (bindings.vertex.program->info.uses_dma ||
-	    (bindings.pixel && bindings.pixel->program->info.uses_dma)) {
+	if (bindings.vertex.runtime->program->info.uses_dma ||
+	    (bindings.pixel && bindings.pixel->runtime->program->info.uses_dma)) {
 		m_context.GetGpuResources().PrepareBda();
 	}
 	RebindBuffers(bindings.vertex);
@@ -948,13 +982,13 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 	                                       ? vk::ShaderStageFlagBits::eFragment
 	                                       : vk::ShaderStageFlags {};
 	for (const auto* prepared: prepared_bindings) {
-		EXIT_IF(prepared == nullptr || prepared->program == nullptr ||
-		        prepared->snapshot == nullptr);
-		write_count += prepared->program->bindings.descriptors.size();
-		for (const auto& binding: prepared->program->bindings.descriptors) {
+		EXIT_IF(prepared == nullptr || prepared->runtime == nullptr || !*prepared->runtime);
+		const auto& program = *prepared->runtime->program;
+		write_count += program.bindings.descriptors.size();
+		for (const auto& binding: program.bindings.descriptors) {
 			descriptor_count += NativeDescriptorCount(binding);
 		}
-		const auto shader_stage = NativeShaderStage(prepared->program->stage);
+		const auto shader_stage = NativeShaderStage(program.stage);
 		push_stages |= shader_stage;
 		EXIT_IF((pipeline_bind_point == vk::PipelineBindPoint::eGraphics &&
 		         (shader_stage & GraphicsStages) == vk::ShaderStageFlags {}) ||
@@ -969,7 +1003,7 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 	m_descriptor_writes.reserve(write_count);
 
 	for (auto* prepared: prepared_bindings) {
-		const auto& program       = *prepared->program;
+		const auto& program       = *prepared->runtime->program;
 		auto&       descriptors   = *prepared;
 		const auto  shader_stage  = NativeShaderStage(program.stage);
 		const auto  shader_stages = ShaderPipelineStages(shader_stage);

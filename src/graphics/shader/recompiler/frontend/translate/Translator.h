@@ -9,9 +9,8 @@ namespace Libs::Graphics::ShaderRecompiler::Frontend {
 
 class Translator {
 public:
-	Translator(IR::Program& program, IR::Block* block, uint32_t vector_limit, uint32_t wave_size)
-	    : program(program), ir(block), current_vector_limit(vector_limit),
-	      current_wave_size(wave_size) {}
+	Translator(IR::Program& program, IR::Block* block, uint32_t vector_limit)
+	    : program(program), ir(block), current_vector_limit(vector_limit) {}
 
 	void TranslateInstruction(const Decoder::Instruction& inst);
 	void TranslateEmbeddedFetch(const Decoder::Instruction& inst, uint32_t attribute,
@@ -19,11 +18,12 @@ public:
 	void AddBranchCondition(const CFG::BasicBlock& source, IR::BlockInfo& info);
 
 private:
-	Decoder::Operand SourceAt(const Decoder::Instruction& inst, uint32_t index);
+	const Decoder::Operand& SourceAt(const Decoder::Instruction& inst, uint32_t index);
 	Decoder::Operand DestinationOperand(const Decoder::Instruction& inst);
 	Decoder::Operand OffsetOperand(const Decoder::Operand& operand, uint32_t offset);
 	Decoder::Operand ScalarDestinationOperand(const Decoder::Operand& operand, uint32_t offset);
 	Decoder::Operand PlainOperand(const Decoder::Operand& operand);
+	IR::U1                 AnyLane(IR::U32 low, IR::U32 high);
 	std::array<IR::U32, 2> BallotMask(IR::U1 value);
 	IR::U32                ReadRawU32(const Decoder::Operand& operand);
 	IR::U32                ReadScalarCode(uint32_t code);
@@ -36,7 +36,6 @@ private:
 	IR::U32                PackHalf2x16(IR::F32 low, IR::F32 high);
 	void                   Write16Bits(const Decoder::Operand& operand, IR::U32 value);
 	void                   WriteF16(const Decoder::Operand& operand, IR::F32 value);
-	void                   WriteU16(const Decoder::Operand& operand, IR::U32 value);
 	IR::U32                ReadU32(const Decoder::Operand& operand);
 	std::array<IR::U32, 2> ReadU32Pair(const Decoder::Operand& operand);
 	IR::U64                ReadU64(const Decoder::Operand& operand);
@@ -49,7 +48,6 @@ private:
 	IR::U32 ReadF16LaneBits(const Decoder::Operand& operand, bool high_lane);
 	std::array<IR::U32, 2> ExtractU64(IR::U64 value);
 	void    WriteU32Pair(const Decoder::Operand& operand, const std::array<IR::U32, 2>& value);
-	IR::U1  ReadCondition(const Decoder::Operand& operand);
 	IR::U32 ConditionBit(const Decoder::Operand& operand);
 	IR::U1  ReadMask(const Decoder::Operand& operand);
 	IR::U1  ReadMaskValid(const Decoder::Operand& operand);
@@ -93,6 +91,10 @@ private:
 	bool FLAT_STORE(const Decoder::Instruction& inst);
 	bool IMAGE_GET_RESINFO(const Decoder::Instruction& inst);
 	bool IMAGE_GET_LOD(const Decoder::Instruction& inst);
+	// raytracing: begin
+	bool    IMAGE_BVH_INTERSECT_RAY(const Decoder::Instruction& inst);
+	IR::U32 BvhAddressComponent(const Decoder::Instruction& inst, uint32_t index);
+	// raytracing: end
 	bool IMAGE_LOAD(const Decoder::Instruction& inst);
 	bool IMAGE_STORE(const Decoder::Instruction& inst);
 	bool IMAGE_SAMPLE(const Decoder::Instruction& inst);
@@ -216,7 +218,7 @@ private:
 	bool    PackB16(const Decoder::Instruction& inst, bool high0, bool high1);
 
 	void S_SAVEEXEC(const Decoder::Instruction& inst, IR::ValueOpcode operation, bool negate_exec,
-	                bool negate_source, bool write_64);
+	                bool negate_source, bool write_64, bool negate_result = false);
 	void ADD_U32(const Decoder::Instruction& inst, bool vector, bool use_carry_in);
 	void SUB_U32(const Decoder::Instruction& inst, bool vector, bool reverse);
 	void SUBB_U32(const Decoder::Instruction& inst, bool vector, bool reverse);
@@ -258,7 +260,6 @@ private:
 	Decoder::Opcode current_opcode       = Decoder::Opcode::UNKNOWN;
 	uint32_t        current_pc           = 0;
 	uint32_t        current_vector_limit = 1;
-	uint32_t        current_wave_size    = 64;
 };
 
 } // namespace Libs::Graphics::ShaderRecompiler::Frontend

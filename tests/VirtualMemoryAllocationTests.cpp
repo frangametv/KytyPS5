@@ -205,7 +205,7 @@ void TestWindowsGuestRedZoneStaticPatcher() {
 	                                   TRAMPOLINE_SIZE);
 	const std::array<uintptr_t, 1> function_starts = {static_cast<uintptr_t>(mapping)};
 	const auto result = Loader::PatchRedZoneMemoryInstructions(
-	    mapping, code.size(), function_starts);
+	    mapping, code.size(), function_starts, true);
 	Check(test, Common::VirtualMemory::FlushInstructionCache(mapping, CODE_SIZE + TRAMPOLINE_SIZE),
 	      "failed to flush patched test code");
 	const bool patched_preserved = function(static_cast<const uint64_t*>(g_red_zone_fault_page)) == 1;

@@ -9,6 +9,9 @@
 #include "libs/errno.h"
 #include "libs/libs.h"
 
+#include <mutex>
+#include <unordered_set>
+
 namespace Libs::LibKernel::EventFlag {
 
 LIB_NAME("libkernel", "libkernel");
@@ -236,6 +239,38 @@ void KernelEventFlagPrivate::Cancel(uint64_t bits, int* num_waiting_threads) {
 	m_status = Status::Set;
 }
 
+namespace {
+
+// Handles are validated against the set of live flags, as the kernel does, so a stale or foreign value
+// gets ESRCH instead of dereferencing whatever it points at.
+std::mutex                                 g_event_flags_mutex;
+std::unordered_set<KernelEventFlagPrivate*> g_event_flags;
+
+void EventFlagRegister(KernelEventFlagPrivate* ef) {
+	std::lock_guard lock(g_event_flags_mutex);
+	g_event_flags.insert(ef);
+}
+
+void EventFlagUnregister(KernelEventFlagPrivate* ef) {
+	std::lock_guard lock(g_event_flags_mutex);
+	g_event_flags.erase(ef);
+}
+
+bool EventFlagValid(KernelEventFlagPrivate* ef) {
+	if (ef == nullptr) {
+		return false;
+	}
+	{
+		std::lock_guard lock(g_event_flags_mutex);
+		if (g_event_flags.count(ef) != 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+} // namespace
+
 int KYTY_SYSV_ABI KernelCreateEventFlag(KernelEventFlag* ef, const char* name, uint32_t attr,
                                         uint64_t init_pattern, const void* param) {
 	PRINT_NAME();
@@ -266,6 +301,7 @@ int KYTY_SYSV_ABI KernelCreateEventFlag(KernelEventFlag* ef, const char* name, u
 	}
 
 	*ef = new KernelEventFlagPrivate(std::string(name), single, fifo, init_pattern);
+	EventFlagRegister(*ef);
 
 	LOGF("\tEventFlag create: %s\n", name);
 
@@ -275,10 +311,11 @@ int KYTY_SYSV_ABI KernelCreateEventFlag(KernelEventFlag* ef, const char* name, u
 int KYTY_SYSV_ABI KernelDeleteEventFlag(KernelEventFlag ef) {
 	PRINT_NAME();
 
-	if (ef == nullptr) {
+	if (!EventFlagValid(ef)) {
 		return KERNEL_ERROR_ESRCH;
 	}
 
+	EventFlagUnregister(ef);
 	delete ef;
 
 	return OK;
@@ -288,8 +325,8 @@ int KYTY_SYSV_ABI KernelWaitEventFlag(KernelEventFlag ef, uint64_t bit_pattern, 
                                       uint64_t* result_pat, KernelUseconds* timeout) {
 	PRINT_NAME();
 
-	if (ef == nullptr) {
-		return KERNEL_ERROR_ESRCH;
+	if (!EventFlagValid(ef) || bit_pattern == 0) {
+		return (bit_pattern == 0 && ef != nullptr ? KERNEL_ERROR_EINVAL : KERNEL_ERROR_ESRCH);
 	}
 
 	if (bit_pattern == 0) {
@@ -316,7 +353,7 @@ int KYTY_SYSV_ABI KernelPollEventFlag(KernelEventFlag ef, uint64_t bit_pattern, 
                                       uint64_t* result_pat) {
 	PRINT_NAME();
 
-	if (ef == nullptr) {
+	if (!EventFlagValid(ef)) {
 		return KERNEL_ERROR_ESRCH;
 	}
 
@@ -343,7 +380,7 @@ int KYTY_SYSV_ABI KernelPollEventFlag(KernelEventFlag ef, uint64_t bit_pattern, 
 int KYTY_SYSV_ABI KernelSetEventFlag(KernelEventFlag ef, uint64_t bit_pattern) {
 	PRINT_NAME();
 
-	if (ef == nullptr) {
+	if (!EventFlagValid(ef)) {
 		return KERNEL_ERROR_ESRCH;
 	}
 
@@ -355,7 +392,7 @@ int KYTY_SYSV_ABI KernelSetEventFlag(KernelEventFlag ef, uint64_t bit_pattern) {
 int KYTY_SYSV_ABI KernelClearEventFlag(KernelEventFlag ef, uint64_t bit_pattern) {
 	PRINT_NAME();
 
-	if (ef == nullptr) {
+	if (!EventFlagValid(ef)) {
 		return KERNEL_ERROR_ESRCH;
 	}
 
@@ -368,7 +405,7 @@ int KYTY_SYSV_ABI KernelCancelEventFlag(KernelEventFlag ef, uint64_t set_pattern
                                         int* num_wait_threads) {
 	PRINT_NAME();
 
-	if (ef == nullptr) {
+	if (!EventFlagValid(ef)) {
 		return KERNEL_ERROR_ESRCH;
 	}
 

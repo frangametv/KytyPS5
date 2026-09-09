@@ -1,8 +1,44 @@
 #include "librarySettings.h"
 
 #include "configuration.h"
+#include <QCoreApplication>
+#include <QFileInfo>
+#include <QtGui/qtguiglobal.h>
+#if QT_CONFIG(vulkan)
+#include <QVulkanInstance>
+#include <QVulkanWindow>
+#endif
 
 namespace {
+QStringList GpuChoices() {
+	static const auto names = [] {
+		QStringList result {"Auto"};
+#if QT_CONFIG(vulkan)
+#if defined(__APPLE__)
+		if (!qEnvironmentVariableIsSet("QT_VULKAN_LIB")) {
+			const auto base = QCoreApplication::applicationDirPath();
+			auto library = base + "/libMoltenVK.dylib";
+			if (!QFileInfo::exists(library)) library = base + "/../Frameworks/libMoltenVK.dylib";
+			if (QFileInfo::exists(library)) qputenv("QT_VULKAN_LIB", library.toUtf8());
+		}
+#endif
+		QVulkanInstance instance;
+		instance.setApiVersion(QVersionNumber(1, 3, 0));
+#if !defined(__APPLE__)
+		instance.setFlags(QVulkanInstance::NoPortabilityDrivers);
+#endif
+		if (instance.create()) {
+			QVulkanWindow window;
+			window.setVulkanInstance(&instance);
+			for (const auto& device : window.availablePhysicalDevices())
+				result.append(QString::fromUtf8(device.deviceName));
+		}
+#endif
+		return result;
+	}();
+	return names;
+}
+
 const QStringList languages {"Japanese",
                              "English (United States)",
                              "French (France)",
@@ -77,6 +113,16 @@ QVariantList LibrarySettings::Fields(const Configuration& info) {
 	                           {"choices", EnumToList<Configuration::PresentMode>()},
 	                           {"minimum", 0},
 	                           {"maximum", 0}});
+	const auto gpu_choices = GpuChoices();
+	fields.append(QVariantMap {{"key", "gpu_selection"},
+	                           {"label", "Graphics device"},
+	                           {"section", "Graphics"},
+	                           {"kind", "choiceIndex"},
+	                           {"value", info.gpu_index >= 0 && info.gpu_index + 1 < gpu_choices.size()
+	                                         ? info.gpu_index + 1 : 0},
+	                           {"choices", gpu_choices},
+	                           {"minimum", 0},
+	                           {"maximum", gpu_choices.size() - 1}});
 	fields.append(QVariantMap {{"key", "fullscreen_enabled"},
 	                           {"label", "Start in fullscreen"},
 	                           {"section", "Graphics"},
@@ -228,6 +274,12 @@ QString LibrarySettings::Apply(Configuration& info, const QVariantMap& values) {
 		if (!EnumToList<Configuration::PresentMode>().contains(text))
 			return "Invalid presentation mode";
 		info.present_mode = TextToEnum<Configuration::PresentMode>(text);
+	}
+	if (values.contains("gpu_selection")) {
+		bool ok = false;
+		const int value = values.value("gpu_selection").toInt(&ok);
+		if (!ok || value < 0 || value >= GpuChoices().size()) return "Invalid graphics device";
+		info.gpu_index = value - 1;
 	}
 	if (values.contains("fullscreen_enabled")) {
 		info.fullscreen_enabled = values.value("fullscreen_enabled").toBool();

@@ -20,6 +20,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
@@ -818,6 +819,60 @@ static void                               MemoryPoolSubtractCommitted(uint64_t l
 // Keep host mappings, physical blocks, placeholders, and virtual ranges in step.
 static std::recursive_mutex g_memory_operation_mutex;
 
+// A MAP_FIXED replacement drops the old view before the new one lands. A guest thread reading the
+// range in that window faults on a bare placeholder, so publish the window and let the fault
+// handler wait for the mapping instead of killing the process. Publishers all hold
+// g_memory_operation_mutex, so claiming a slot needs no further synchronization.
+struct FixedRemapWindow {
+	std::atomic<uint64_t> start {0};
+	std::atomic<uint64_t> end {0};
+};
+static std::array<FixedRemapWindow, 8> g_fixed_remap_windows;
+
+class FixedRemapGuard {
+public:
+	FixedRemapGuard() = default;
+	~FixedRemapGuard() {
+		if (m_window != nullptr) {
+			m_window->start.store(0, std::memory_order_release);
+			m_window->end.store(0, std::memory_order_relaxed);
+		}
+	}
+	KYTY_CLASS_NO_COPY(FixedRemapGuard);
+
+	void Arm(uint64_t start, uint64_t size) {
+		if (m_window != nullptr || start == 0 || size == 0) {
+			return;
+		}
+		for (auto& window: g_fixed_remap_windows) {
+			if (window.start.load(std::memory_order_relaxed) == 0) {
+				window.end.store(start + size, std::memory_order_relaxed);
+				window.start.store(start, std::memory_order_release);
+				m_window = &window;
+				return;
+			}
+		}
+	}
+
+private:
+	FixedRemapWindow* m_window = nullptr;
+};
+
+// True when a fixed map is asking for the mapping that is already there. Replacing it would tear
+// the live view down and rebuild an identical one, opening the window above for nothing.
+static bool FixedMapMatchesExistingRange(uint64_t vaddr, uint64_t size, int64_t phys_offset,
+                                         int prot);
+
+static bool IsInFixedRemapWindow(uint64_t vaddr) noexcept {
+	for (const auto& window: g_fixed_remap_windows) {
+		const auto start = window.start.load(std::memory_order_acquire);
+		if (start != 0 && vaddr >= start && vaddr < window.end.load(std::memory_order_relaxed)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 // The base address the PS5 kernel hands out for hint-less user mappings. Guest code can
 // assume mappings it did not place explicitly are at or above this (Sony's libc rejects a
 // heap below it), so hint-less searches must not fall back to the low system-managed range.
@@ -917,6 +972,23 @@ void InstallGpuResources(Graphics::GpuResourceManager* resources) noexcept {
 
 bool HandleGpuFault(Graphics::PageFaultAccess access, uint64_t fault_vaddr) noexcept {
 	return g_gpu_resources != nullptr && g_gpu_resources->HandleFault(access, fault_vaddr);
+}
+
+// True when the address sat inside a MAP_FIXED replacement window that closed while waiting, so
+// the faulting instruction can be retried against the finished mapping. Bounded, because the
+// thread that closes the window may itself be waiting on this one.
+bool WaitForFixedRemap(uint64_t fault_vaddr) noexcept {
+	constexpr uint32_t MAX_ATTEMPTS = 200000;
+	if (!IsInFixedRemapWindow(fault_vaddr)) {
+		return false;
+	}
+	for (uint32_t attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+		if (!IsInFixedRemapWindow(fault_vaddr)) {
+			return true;
+		}
+		std::this_thread::yield();
+	}
+	return false;
 }
 
 struct PrtAperture {
@@ -2901,6 +2973,18 @@ int KYTY_SYSV_ABI KernelCheckedReleaseDirectMemory(int64_t start, size_t len) {
 	return result == KERNEL_ERROR_EACCES ? KERNEL_ERROR_ENOENT : result;
 }
 
+static bool FixedMapMatchesExistingRange(uint64_t vaddr, uint64_t size, int64_t phys_offset,
+                                         int prot) {
+	std::vector<VirtualRanges::Range> ranges;
+	if (!g_virtual_ranges->QuerySpan(vaddr, size, &ranges) || ranges.size() != 1) {
+		return false;
+	}
+	const auto& r = ranges.front();
+	return r.type == VirtualRangeType::Direct && r.start == vaddr && r.size == size &&
+	       r.offset == static_cast<uint64_t>(phys_offset) && r.protection == prot &&
+	       g_guest_address_space->BackingContains(vaddr, size);
+}
+
 int KYTY_SYSV_ABI KernelMapDirectMemory(void** addr, size_t len, int prot, int flags,
                                         int64_t direct_memory_start, size_t alignment) {
 	PRINT_NAME();
@@ -2965,6 +3049,11 @@ int KYTY_SYSV_ABI KernelMapDirectMemory(void** addr, size_t len, int prot, int f
 			return KERNEL_ERROR_ENOMEM;
 		}
 
+		if (FixedMapMatchesExistingRange(in_addr, len, direct_memory_start, prot)) {
+			*addr = reinterpret_cast<void*>(in_addr);
+			return OK;
+		}
+
 		std::vector<VirtualRanges::Range> reserved_ranges;
 		if (g_virtual_ranges->QuerySpan(in_addr, len, &reserved_ranges) &&
 		    std::all_of(reserved_ranges.begin(), reserved_ranges.end(), [](const auto& range) {
@@ -2976,6 +3065,10 @@ int KYTY_SYSV_ABI KernelMapDirectMemory(void** addr, size_t len, int prot, int f
 				consumed_reservation = true;
 				map_consumed_reserved_fixed();
 			}
+		}
+		FixedRemapGuard remap_guard;
+		if (!consumed_reservation) {
+			remap_guard.Arm(in_addr, len);
 		}
 		if (!consumed_reservation && ReplaceFixedRangeWithReserved(in_addr, len) &&
 		    g_virtual_ranges->ConsumeReservedSpan(in_addr, len, &consumed_range)) {

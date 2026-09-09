@@ -107,6 +107,26 @@ private slots:
     values["screen_resolution"] = "invalid";
     QVERIFY(!LibrarySettings::Apply(restored, values).isEmpty());
   }
+  void gpuSelectionArgumentsAndPersistence() {
+    Configuration config;
+    QVERIFY(!CreateEmulatorArgs(config).contains("--gpu"));
+    config.gpu_index = 1;
+    auto args = CreateEmulatorArgs(config);
+    const int option = args.indexOf("--gpu");
+    QVERIFY(option >= 0);
+    QCOMPARE(args.value(option + 1), QString("1"));
+    Configuration copied;
+    copied.CopyEmulatorSettingsFrom(config);
+    QCOMPARE(copied.gpu_index, 1);
+    QSettings settings("gpu-roundtrip.ini", QSettings::IniFormat);
+    config.WriteSettings(&settings);
+    Configuration restored;
+    restored.ReadSettings(&settings);
+    QCOMPARE(restored.gpu_index, 1);
+    QVERIFY(LibrarySettings::Apply(restored, {{"gpu_selection", 0}}).isEmpty());
+    QCOMPARE(restored.gpu_index, -1);
+    QVERIFY(!LibrarySettings::Apply(restored, {{"gpu_selection", -1}}).isEmpty());
+  }
   void configurationInheritance() {
     LibraryController controller(nullptr);
     QCOMPARE(controller.Games().size(), 1);

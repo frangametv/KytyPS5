@@ -2,6 +2,8 @@
   "code": "it",
   "label": "Italiano",
   "translations": {
+    "Graphics device": "Scheda grafica",
+    "Invalid graphics device": "Scheda grafica non valida",
     "Library": "Libreria",
     "LIBRARY": "LIBRERIA",
     "Options": "Impostazioni",

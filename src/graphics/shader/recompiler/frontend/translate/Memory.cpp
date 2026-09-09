@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <utility>
 
 namespace Libs::Graphics::ShaderRecompiler::Frontend {
 
@@ -71,16 +72,22 @@ ResourceKind FlatSegmentResourceKind(uint32_t segment) {
 	}
 }
 
+bool IsScalarAddressLoad(Decoder::Opcode opcode) {
+	switch (opcode) {
+		case Decoder::Opcode::S_LOAD_DWORD:
+		case Decoder::Opcode::S_LOAD_DWORDX2:
+		case Decoder::Opcode::S_LOAD_DWORDX4:
+		case Decoder::Opcode::S_LOAD_DWORDX8:
+		case Decoder::Opcode::S_LOAD_DWORDX16: return true;
+		default: return false;
+	}
+}
+
 ResourceKind MemoryKind(const Decoder::Instruction& decoded) {
 	switch (decoded.family) {
 		case Decoder::Family::SMEM:
-			return decoded.opcode == Decoder::Opcode::S_LOAD_DWORD ||
-			               decoded.opcode == Decoder::Opcode::S_LOAD_DWORDX2 ||
-			               decoded.opcode == Decoder::Opcode::S_LOAD_DWORDX4 ||
-			               decoded.opcode == Decoder::Opcode::S_LOAD_DWORDX8 ||
-			               decoded.opcode == Decoder::Opcode::S_LOAD_DWORDX16
-			           ? ResourceKind::ScalarAddress
-			           : ResourceKind::ScalarBuffer;
+			return IsScalarAddressLoad(decoded.opcode) ? ResourceKind::ScalarAddress
+			                                          : ResourceKind::ScalarBuffer;
 		case Decoder::Family::MUBUF:
 		case Decoder::Family::MTBUF: return ResourceKind::Buffer;
 		case Decoder::Family::FLAT: return FlatSegmentResourceKind(decoded.memory_segment);
@@ -146,16 +153,6 @@ IR::MemoryInfo MemoryInfoFromDecoded(const Decoder::Instruction& decoded) {
 	return memory;
 }
 
-bool IsScalarAddressLoad(Decoder::Opcode opcode) {
-	switch (opcode) {
-		case Decoder::Opcode::S_LOAD_DWORD:
-		case Decoder::Opcode::S_LOAD_DWORDX2:
-		case Decoder::Opcode::S_LOAD_DWORDX4:
-		case Decoder::Opcode::S_LOAD_DWORDX8:
-		case Decoder::Opcode::S_LOAD_DWORDX16: return true;
-		default: return false;
-	}
-}
 
 bool IsScalarBufferLoad(Decoder::Opcode opcode) {
 	switch (opcode) {
@@ -290,15 +287,15 @@ IR::Value Translator::GetAddressResource(IR::Value low, IR::Value high) {
 
 Translator::AddressOperands Translator::ReadAddressOperands(const Decoder::Instruction& inst,
                                                             uint32_t first_source) {
-	const auto memory       = MemoryInfoFromDecoded(inst);
+	const auto kind         = MemoryKind(inst);
 	const auto low          = ReadU32(MemorySourceAt(inst, first_source));
 	const auto high_or_base = MemorySourceAt(inst, first_source + 1u);
-	if (memory.kind == IR::ResourceKind::Scratch) {
+	if (kind == IR::ResourceKind::Scratch) {
 		const auto offset =
 		    high_or_base.kind != Decoder::OperandKind::Vgpr ? ReadU32(high_or_base) : low;
 		return {ir.Emit(IR::ValueOpcode::GetScratchResource), offset, IR::Value(0u)};
 	}
-	if (memory.kind == IR::ResourceKind::Global &&
+	if (kind == IR::ResourceKind::Global &&
 	    high_or_base.kind != Decoder::OperandKind::Vgpr) {
 		const auto base_low  = ReadU32(high_or_base);
 		const auto base_high = ReadU32(OffsetOperand(high_or_base, 1u));
@@ -329,18 +326,17 @@ IR::Value Translator::GetSamplerResource(const IR::MemoryInfo& memory) {
 
 IR::Value Translator::MakeImageAddress(const Decoder::Instruction& inst,
                                        const Decoder::Operand&     base) {
-	const auto                memory = MemoryInfoFromDecoded(inst);
 	std::array<IR::Value, 13> components {};
 	components.fill(IR::Value(0u));
 	const auto count =
-	    Decoder::ImageAddressDwordCount(memory.image_sample_flags, memory.image_address_components);
+	    Decoder::ImageAddressDwordCount(inst.image_sample_flags, inst.image_address_components);
 	EXIT_IF(count > components.size());
 	const auto nsa_components =
-	    std::min(memory.image_nsa_dwords * 4u, Decoder::MaxImageNsaAddressComponents);
+	    std::min(inst.image_nsa_dwords * 4u, Decoder::MaxImageNsaAddressComponents);
 	for (uint32_t index = 0; index < count; index++) {
 		if (index != 0u && index - 1u < nsa_components) {
 			components[index] =
-			    ir.GetVectorReg(static_cast<IR::VectorReg>(memory.image_nsa_addr[index - 1u]));
+			    ir.GetVectorReg(static_cast<IR::VectorReg>(inst.image_nsa_addr[index - 1u]));
 		} else {
 			components[index] = ReadRawU32(OffsetOperand(PlainOperand(base), index));
 		}
@@ -384,11 +380,10 @@ void Translator::WriteImageComponents(const Decoder::Operand& dst, IR::Value val
 
 Translator::BufferAddress Translator::ReadBufferAddress(const Decoder::Instruction& inst,
                                                         uint32_t                    first_source) {
-	const auto memory  = MemoryInfoFromDecoded(inst);
 	uint32_t   cursor  = first_source;
 	const auto next    = [&]() { return ReadU32(MemorySourceAt(inst, cursor++)); };
-	const auto index   = memory.idxen ? next() : IR::U32(IR::Value(0u));
-	const auto offset  = memory.offen ? next() : IR::U32(IR::Value(0u));
+	const auto index   = inst.idxen ? next() : IR::U32(IR::Value(0u));
+	const auto offset  = inst.offen ? next() : IR::U32(IR::Value(0u));
 	const auto soffset = next();
 	return {index, offset, soffset};
 }
@@ -638,6 +633,69 @@ bool Translator::IMAGE_GET_RESINFO(const Decoder::Instruction& inst) {
 	WriteImageComponents(inst.dst, result, memory, 4u);
 	return true;
 }
+
+// raytracing: begin - one address component, from the NSA payload when present and from
+// the sequential run after vaddr otherwise.
+IR::U32 Translator::BvhAddressComponent(const Decoder::Instruction& inst, uint32_t index) {
+	const auto base = PlainOperand(inst.src0);
+	if (index == 0) {
+		return ReadRawU32(base);
+	}
+	const auto nsa = std::min(inst.image_nsa_dwords * 4u, Decoder::MaxImageNsaAddressComponents);
+	if (index - 1u < nsa) {
+		return ir.GetVectorReg(static_cast<IR::VectorReg>(inst.image_nsa_addr[index - 1u]));
+	}
+	return ReadRawU32(OffsetOperand(base, index));
+}
+
+// Emit one BVH node intersection. The ray extent and origin are always 32-bit; A16 packs
+// only the direction and its reciprocal into half pairs, saving three address registers.
+bool Translator::IMAGE_BVH_INTERSECT_RAY(const Decoder::Instruction& inst) {
+	const bool a16   = (inst.image_sample_flags & Decoder::ImageSampleFlagA16) != 0;
+	const bool bvh64 = inst.opcode == Decoder::Opcode::IMAGE_BVH64_INTERSECT_RAY;
+
+	const auto memory       = MemoryInfoFromDecoded(inst);
+	const auto pointer_low  = BvhAddressComponent(inst, 0);
+	const auto pointer_high = bvh64 ? BvhAddressComponent(inst, 1) : IR::U32(IR::Value(0u));
+	const auto first        = bvh64 ? 2u : 1u;
+	const auto word         = [&](uint32_t index) { return BvhAddressComponent(inst, first + index); };
+	const auto as_float     = [&](IR::U32 value) {
+		return IR::F32(ir.Emit(IR::ValueOpcode::BitCastF32U32, {value}));
+	};
+	const auto half = [&](uint32_t index, bool high) {
+		const auto packed = high ? IR::U32(ir.Emit(IR::ValueOpcode::ShiftRightLogical32,
+		                                           {word(index), IR::Value(16u)}))
+		                         : word(index);
+		const auto narrow = ir.Emit(IR::ValueOpcode::ConvertU16U32, {packed});
+		return IR::F32(ir.Emit(IR::ValueOpcode::ConvertF32F16,
+		                       {ir.Emit(IR::ValueOpcode::BitCastF16U16, {narrow})}));
+	};
+	// Words 0-3 are the extent and origin, always 32-bit. Under A16 the three that follow hold
+	// {dir.x, dir.y}, {dir.z, inv.x} and {inv.y, inv.z} as half pairs.
+	const auto ray = [&](uint32_t index) {
+		if (!a16 || index < 4u) {
+			return as_float(word(index));
+		}
+		static constexpr std::pair<uint32_t, bool> kPacked[6] = {
+		    {4, false}, {4, true}, {5, false}, {5, true}, {6, false}, {6, true}};
+		const auto& source = kPacked[index - 4u];
+		return half(source.first, source.second);
+	};
+
+	const auto result = ir.Emit(
+	    IR::ValueOpcode::BvhIntersectRay,
+	    {GetResourceDword(memory.resource, 0), GetResourceDword(memory.resource, 1),
+	     GetResourceDword(memory.resource, 2), GetResourceDword(memory.resource, 3), pointer_low,
+	     pointer_high, ray(0), ray(1), ray(2), ray(3), ray(4), ray(5), ray(6), ray(7), ray(8),
+	     ray(9)});
+	for (uint32_t component = 0; component < 4u; component++) {
+		WriteOperand(OffsetOperand(inst.dst, component),
+		             ir.Emit(IR::ValueOpcode::CompositeExtractU32x4,
+		                     {result, IR::Value(component)}));
+	}
+	return true;
+}
+// raytracing: end
 
 bool Translator::IMAGE_GET_LOD(const Decoder::Instruction& inst) {
 	const auto memory   = MemoryInfoFromDecoded(inst);
@@ -1038,6 +1096,11 @@ bool Translator::EmitMemory(const Decoder::Instruction& inst) {
 
 		case Decoder::Opcode::IMAGE_GET_RESINFO: return IMAGE_GET_RESINFO(inst);
 		case Decoder::Opcode::IMAGE_GET_LOD: return IMAGE_GET_LOD(inst);
+		// raytracing: begin
+		case Decoder::Opcode::IMAGE_BVH_INTERSECT_RAY:
+		case Decoder::Opcode::IMAGE_BVH64_INTERSECT_RAY:
+			return IMAGE_BVH_INTERSECT_RAY(inst);
+		// raytracing: end
 		case Decoder::Opcode::IMAGE_LOAD:
 		case Decoder::Opcode::IMAGE_LOAD_MIP: return IMAGE_LOAD(inst);
 		case Decoder::Opcode::IMAGE_STORE:

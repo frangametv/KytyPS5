@@ -12,6 +12,7 @@
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 
 #include <map>
+#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -107,6 +108,11 @@ private:
 	                                      uint64_t total_size);
 	[[nodiscard]] bool SynchronizeBufferFromImage(Buffer& buffer, uint64_t vaddr, uint64_t size);
 	void DownloadBufferMemory(std::span<const DownloadCopy> copies);
+	void RecordGpuWrite(uint64_t vaddr, uint64_t size);
+	void ForgetGpuWrite(uint64_t vaddr, uint64_t size);
+	[[nodiscard]] std::optional<uint64_t> GpuWriteTick(uint64_t vaddr, uint64_t size) const;
+	[[nodiscard]] bool TryDownloadRetired(std::span<const DownloadCopy> copies, uint64_t tick);
+	void WriteHostMemory(uint64_t vaddr, std::span<const uint8_t> data);
 	void ReadMemoryOnGpu(uint64_t vaddr, uint64_t size, bool is_write);
 
 	GraphicContext&                                   m_graphics;
@@ -119,11 +125,17 @@ private:
 	BufferMap                                         m_buffers;
 	PageTable                                         m_page_table;
 	RangeSet                                          m_gpu_modified_ranges;
+	// Last tick that wrote each GPU-modified interval: start -> {end, tick}.
+	std::map<uint64_t, std::pair<uint64_t, uint64_t>> m_gpu_write_ticks;
 	MemoryTracker                                     m_memory_tracker;
 	StreamBuffer                                      m_staging_buffer;
 	StreamBuffer                                      m_stream_buffer;
 	StreamBuffer                                      m_download_buffer;
 	StreamBuffer                                      m_device_buffer;
+	Buffer                                            m_readback_buffer;
+	vk::CommandPool                                   m_readback_pool    = nullptr;
+	vk::CommandBuffer                                 m_readback_command = nullptr;
+	vk::Fence                                         m_readback_fence   = nullptr;
 	TextureCache&                                     m_texture_cache;
 	uint64_t                                          m_total_used_memory  = 0;
 	uint64_t m_trigger_gc_memory  = 1ull * 1024 * 1024 * 1024;

@@ -2,6 +2,8 @@
   "code": "en",
   "label": "English",
   "translations": {
+    "Graphics device": "Graphics device",
+    "Invalid graphics device": "Invalid graphics device",
     "Library": "Library",
     "LIBRARY": "LIBRARY",
     "Options": "Options",

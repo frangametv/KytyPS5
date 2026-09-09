@@ -32,7 +32,7 @@ add_executable(launcher WIN32
 )
 
 
-target_link_libraries(launcher Qt6::Concurrent Qt6::Network Qt6::Widgets Qt6::QuickWidgets Qt6::QuickControls2 kyty_git_version)
+target_link_libraries(launcher Qt6::Concurrent Qt6::Network Qt6::Widgets Qt6::QuickWidgets Qt6::QuickControls2 Vulkan::Headers kyty_git_version)
 if(WIN32)
 target_link_libraries(launcher setupapi)
 endif()
@@ -234,7 +234,7 @@ if(BUILD_TESTING AND KYTY_BUILD_LIBRARY_TESTS)
     set_target_properties(library_ui_tests PROPERTIES AUTOMOC ON AUTOUIC ON AUTORCC ON)
     target_include_directories(library_ui_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
     target_link_libraries(library_ui_tests PRIVATE Qt6::Test Qt6::Concurrent Qt6::Network
-        Qt6::Widgets Qt6::QuickWidgets Qt6::QuickControls2 kyty_git_version)
+        Qt6::Widgets Qt6::QuickWidgets Qt6::QuickControls2 Vulkan::Headers kyty_git_version)
     if(WIN32)
         target_link_libraries(library_ui_tests PRIVATE setupapi)
     elseif(CLANG)

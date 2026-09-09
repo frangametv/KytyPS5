@@ -415,7 +415,7 @@ struct BindingLayout {
 
 struct ShaderInfo {
 	static constexpr uint32_t MaxBuffers      = 32;
-	static constexpr uint32_t MaxImages       = 32;
+	static constexpr uint32_t MaxImages       = 64;
 	static constexpr uint32_t MaxSamplers     = 32;
 	static constexpr uint32_t MaxSampledPairs = 64;
 
@@ -430,6 +430,9 @@ struct ShaderInfo {
 	int32_t                          instance_offset_sgpr = -1;
 	bool                             has_bitwise_xor    = false;
 	bool                             uses_dma           = false;
+	// raytracing: begin - widens the defaulted operator== used for program identity
+	bool                             uses_bvh           = false;
+	// raytracing: end
 
 	bool operator==(const ShaderInfo& other) const = default;
 };

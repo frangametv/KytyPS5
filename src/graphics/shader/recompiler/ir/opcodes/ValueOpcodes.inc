@@ -290,3 +290,10 @@ VALUE_OPCODE(Sendmsg, Void)
 VALUE_OPCODE(TtraceData, Void)
 VALUE_OPCODE(InstPrefetch, Void)
 VALUE_OPCODE(SelectU32, U32, U1, U32, U32)
+// raytracing: begin - one hardware BVH node intersection. Appended last so the shared
+// opcode numbering is unchanged when these hunks are removed. Every operand is a plain
+// scalar and the opcode is in none of the access tables, so resource tracking and the SRT
+// walker ignore it - the BVH descriptor must never be mistaken for an image descriptor.
+VALUE_OPCODE(BvhIntersectRay, U32x4, U32, U32, U32, U32, U32, U32, F32, F32, F32, F32, F32, F32,
+             F32, F32, F32, F32)
+// raytracing: end

@@ -767,6 +767,14 @@ private:
 
 	void Collect(Inst& inst) {
 		const auto op           = inst.GetOpcode();
+		// raytracing: begin - reads guest BVH nodes by device address, so it needs the page
+		// table, but it carries no descriptor handle and must not be tracked as a resource.
+		if (op == ValueOpcode::BvhIntersectRay) {
+			m_info.uses_dma = true;
+			m_info.uses_bvh = true;
+			return;
+		}
+		// raytracing: end
 		const auto buffer       = BufferAccessOf(op);
 		const auto address_info = AddressOpcodeInfoOf(op);
 		const auto image_info   = ImageOpcodeInfoOf(op);

@@ -54,6 +54,14 @@ enum class Opcode {
 	S_GETPC_B64,
 	S_SETPC_B64,
 	S_AND_SAVEEXEC_B32,
+	S_OR_SAVEEXEC_B32,
+	S_XOR_SAVEEXEC_B32,
+	S_ANDN2_SAVEEXEC_B32,
+	S_ORN2_SAVEEXEC_B32,
+	S_NAND_SAVEEXEC_B32,
+	S_NOR_SAVEEXEC_B32,
+	S_XNOR_SAVEEXEC_B32,
+	S_ORN1_SAVEEXEC_B32,
 	S_ANDN1_SAVEEXEC_B32,
 	S_AND_SAVEEXEC_B64,
 	S_ORN2_SAVEEXEC_B64,
@@ -557,6 +565,10 @@ enum class Opcode {
 	IMAGE_GATHER4_C_O,
 	IMAGE_GATHER4_C_LZ_O,
 	IMAGE_GATHER4H,
+	// raytracing: begin - BVH node intersection, one traversal step; 64-bit pointer variant
+	IMAGE_BVH_INTERSECT_RAY,
+	IMAGE_BVH64_INTERSECT_RAY,
+	// raytracing: end
 	V_INTERP_P1_F32,
 	V_INTERP_P2_F32,
 	V_INTERP_MOV_F32,
@@ -634,7 +646,6 @@ struct Operand {
 	OperandKind kind       = OperandKind::Unknown;
 	uint32_t    value      = 0;
 	int32_t     signed_val = 0;
-	float       float_val  = 0.0f;
 	uint32_t    reg        = 0;
 	uint32_t    sdwa_sel   = 6;
 	// Native 16-bit destinations use the same selector fields internally but preserve the
@@ -659,10 +670,8 @@ struct Operand {
 
 struct Instruction {
 	uint32_t       pc                          = 0;
-	uint32_t       word                        = 0;
 	uint32_t       word_count                  = 1;
 	uint32_t       raw[MaxInstructionRawWords] = {};
-	uint32_t       raw_count                   = 1;
 	Family         family                      = Family::Unknown;
 	uint32_t       opcode_id                   = 0;
 	Opcode         opcode                      = Opcode::UNKNOWN;
@@ -696,7 +705,6 @@ struct Instruction {
 	bool           idxen                                        = false;
 	bool           offen                                        = false;
 	bool           image_r128                                   = false;
-	int32_t        branch_offset                                = 0;
 	uint32_t       branch_target                                = 0;
 	struct {
 		uint32_t target = 0;
