@@ -1,0 +1,15 @@
+diff --git a/utils/vscode/package.json b/utils/vscode/package.json
+index 76fb348b..8aec2931 100644
+--- a/utils/vscode/package.json
++++ b/utils/vscode/package.json
+@@ -32,8 +32,8 @@
+     "dependencies": {
+         "vscode-languageclient": "~4.3.0"
+     },
+-    "activationEvents": [
+-        "*"
++    "activationEvents": [
++        "onLanguage:spirv"
+     ],
+     "main": "./extension.js"
+ }

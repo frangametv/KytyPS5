@@ -161,7 +161,21 @@ Item {
                         Layout.fillWidth: true; spacing: 16
                         Label { text: "KytyPS5"; color: "#F7F8FB"; font.pixelSize: 30; font.bold: true }
                         Label { text: library.version; color: "#C0C5CF"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                        Label { text: qsTr("Library design inspired by SharpEmu. Built with Qt Quick."); color: "#777F8E"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                        Label {
+                            text: qsTr("KytyPS5 is a free and open-source PlayStation 5 emulator written in C++ for Windows and Linux, with experimental macOS support. It is based on a heavily modified version of Kyty.")
+                            color: "#C0C5CF"; font.pixelSize: 14
+                            wrapMode: Text.WordWrap; Layout.fillWidth: true
+                        }
+                        Label {
+                            text: qsTr("The project is in an early stage of development. Compatibility is limited and behavior may change significantly between builds. Development focuses on game compatibility and boot reliability.")
+                            color: "#C0C5CF"; font.pixelSize: 14
+                            wrapMode: Text.WordWrap; Layout.fillWidth: true
+                        }
+                        Label {
+                            text: qsTr("KytyPS5 can boot 2D games and a selection of 3D games, including titles built with Unreal Engine 4/5, Unity, and custom engines.")
+                            color: "#C0C5CF"; font.pixelSize: 14
+                            wrapMode: Text.WordWrap; Layout.fillWidth: true
+                        }
                         Label { text: library.settingsFile; color: "#777F8E"; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true }
                         LibraryButton { text: qsTr("Open settings folder"); onClicked: library.action("openSettings") }
                         CheckBox {

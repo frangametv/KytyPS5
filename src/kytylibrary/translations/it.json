@@ -33,7 +33,6 @@
     "Keyboard & controller": "Tastiera e controller",
     "Configure the global input mapping used when starting a game.": "Configura i comandi globali usati all'avvio dei giochi.",
     "Configure input mapping": "Configura i comandi",
-    "Library design inspired by SharpEmu. Built with Qt Quick.": "Interfaccia ispirata a SharpEmu. Realizzata con Qt Quick.",
     "Open settings folder": "Apri cartella delle impostazioni",
     "Check for updates on startup": "Controlla gli aggiornamenti all'avvio",
     "Check for updates": "Controlla aggiornamenti",
@@ -343,6 +342,9 @@
     "L2": "L2",
     "R2": "R2",
     "L3": "L3",
-    "R3": "R3"
+    "R3": "R3",
+    "KytyPS5 is a free and open-source PlayStation 5 emulator written in C++ for Windows and Linux, with experimental macOS support. It is based on a heavily modified version of Kyty.": "KytyPS5 è un emulatore PlayStation 5 gratuito e open source, scritto in C++ per Windows e Linux, con supporto sperimentale per macOS. Si basa su una versione profondamente modificata di Kyty.",
+    "The project is in an early stage of development. Compatibility is limited and behavior may change significantly between builds. Development focuses on game compatibility and boot reliability.": "Il progetto è in una fase iniziale di sviluppo. La compatibilità è limitata e il comportamento può cambiare significativamente tra una build e l’altra. Lo sviluppo si concentra sulla compatibilità dei giochi e sull’affidabilità dell’avvio.",
+    "KytyPS5 can boot 2D games and a selection of 3D games, including titles built with Unreal Engine 4/5, Unity, and custom engines.": "KytyPS5 può avviare giochi 2D e una selezione di giochi 3D, inclusi titoli realizzati con Unreal Engine 4/5, Unity e motori proprietari."
   }
 }
